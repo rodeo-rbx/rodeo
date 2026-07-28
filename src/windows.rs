@@ -290,10 +290,6 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
         cmd_line = format!("explorer.exe \"{}\"", cmd.args[0]);
     }
 
-    // Convert to null-terminated UTF-16
-    let mut wide_cmd: Vec<u16> = cmd_line.encode_utf16().collect();
-    wide_cmd.push(0);
-
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as u32;
     si.dwFlags = STARTF_USESHOWWINDOW;
@@ -336,35 +332,59 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
 
     let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
 
-    // `Command::detached(true)` → DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP.
+    // `Command::detached(true)` → DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP
+    // + CREATE_BREAKAWAY_FROM_JOB.
     // DETACHED_PROCESS: child doesn't inherit the parent's console, so console
     // teardown when parent dies doesn't propagate.
     // CREATE_NEW_PROCESS_GROUP: child is in its own process group, so Ctrl+C/
     // Ctrl+Break delivered to the parent group don't reach it.
+    // CREATE_BREAKAWAY_FROM_JOB: job membership is inherited, so when the
+    // launching process sits inside a kill-on-close job (rodeo's serve
+    // supervisor wraps its children in one), the child would die with that job
+    // regardless of any detach handling here. Breakaway needs the job to set
+    // JOB_OBJECT_LIMIT_BREAKAWAY_OK; if the enclosing job forbids it,
+    // CreateProcessW fails ERROR_ACCESS_DENIED and we retry without the flag —
+    // launches must not start failing just because the job disallows escape.
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
     let creation_flags: u32 = if cmd.detached {
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
     } else {
         0
     };
 
-    let ok = unsafe {
-        CreateProcessW(
-            ptr::null(),
-            wide_cmd.as_mut_ptr(),
-            ptr::null(),
-            ptr::null(),
-            // bInheritHandles: TRUE when capturing so the child inherits the
-            // pipe write ends (only those are marked inheritable).
-            if want_capture { 1 } else { 0 },
-            creation_flags,
-            ptr::null(),
-            ptr::null(),
-            &si,
-            &mut pi,
-        )
-    };
+    let mut ok = 0;
+    for flags in [creation_flags, creation_flags & !CREATE_BREAKAWAY_FROM_JOB] {
+        // CreateProcessW may write into the command-line buffer, so each
+        // attempt gets its own null-terminated UTF-16 copy.
+        let mut wide_cmd: Vec<u16> = cmd_line.encode_utf16().collect();
+        wide_cmd.push(0);
+        ok = unsafe {
+            CreateProcessW(
+                ptr::null(),
+                wide_cmd.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                // bInheritHandles: TRUE when capturing so the child inherits
+                // the pipe write ends (only those are marked inheritable).
+                if want_capture { 1 } else { 0 },
+                flags,
+                ptr::null(),
+                ptr::null(),
+                &si,
+                &mut pi,
+            )
+        };
+        // Success, or nothing left to strip for the retry (non-detached
+        // spawns never set the breakaway bit): done. A failed breakaway
+        // attempt (job without BREAKAWAY_OK → ERROR_ACCESS_DENIED) falls
+        // through to the jobbed retry — a detached child that dies with the
+        // job beats no child at all.
+        if ok != 0 || flags & CREATE_BREAKAWAY_FROM_JOB == 0 {
+            break;
+        }
+    }
 
     if ok == 0 {
         unsafe {
