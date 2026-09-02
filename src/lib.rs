@@ -183,7 +183,9 @@ impl Command {
         self
     }
 
-    /// If true, launch without stealing focus (background mode).
+    /// If true, launch hidden without taking focus (background mode).
+    /// If false, the app is raised on its own display once it has a window
+    /// (see [`Child::focus`] for how keyboard focus is decided on macOS).
     /// Default: false.
     pub fn background(&mut self, bg: bool) -> &mut Self {
         self.background = bg;
@@ -353,7 +355,14 @@ impl Child {
 
     // -- GUI-specific extras (not on std::process::Child) --
 
-    /// Bring the application to the foreground.
+    /// Bring the application to the front of its own display.
+    ///
+    /// macOS: keyboard focus moves to the app only when the user's focused
+    /// window is on the same display. When it is on another display, the
+    /// app's windows are raised where they are and activation is handed
+    /// straight back to the previous app (key window only), so typing on
+    /// the other display is not interrupted. Windows: `SetForegroundWindow`
+    /// (always takes focus).
     pub fn focus(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
@@ -369,6 +378,63 @@ impl Child {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             Err(Error::Unsupported)
+        }
+    }
+
+    /// Activate the application unconditionally, keyboard focus included —
+    /// for callers about to inject keystrokes, which only reach the
+    /// frontmost app. On macOS returns the pid to pass to `restore_focus`
+    /// afterwards when the user was working on a different display; `None`
+    /// when nothing needs handing back (and always on Windows).
+    pub fn activate(&self) -> Result<Option<u32>> {
+        #[cfg(target_os = "macos")]
+        {
+            return match self.inner {
+                Some(ref inner) => inner.activate(),
+                None => Err(Error::Platform("no GUI handle available".into())),
+            };
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return self.inner.focus().map(|()| None);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            Err(Error::Unsupported)
+        }
+    }
+
+    /// For the next `window`, undo any activation the app grabs for itself
+    /// (macOS; no-op elsewhere). See `MacOSHandle::guard_focus`: an app that
+    /// activates itself mid-task — Studio does when a test session starts
+    /// or ends — has activation handed straight back to the app the user
+    /// was in, unless the user deliberately switched to it. Re-arming
+    /// extends the window.
+    pub fn guard_focus(&self, window: std::time::Duration) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ref inner) = self.inner {
+                inner.guard_focus(window);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+        }
+    }
+
+    /// Hand activation back to `prev` (a pid returned by `activate`),
+    /// bringing only its key window forward. No-op off macOS.
+    pub fn restore_focus(&self, prev: u32) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ref inner) = self.inner {
+                inner.restore_focus(prev);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = prev;
         }
     }
 
@@ -699,3 +765,18 @@ pub(crate) struct HelperInvocation {
 }
 
 pub(crate) static HELPER_INVOCATION: std::sync::OnceLock<HelperInvocation> = std::sync::OnceLock::new();
+
+/// Bring an already-running app to the front of its own display by pid —
+/// the same display-aware behavior as [`Child::focus`], for apps this
+/// process did not launch. macOS only.
+pub fn focus_pid(pid: u32) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::focus_pid(pid);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        Err(Error::Unsupported)
+    }
+}

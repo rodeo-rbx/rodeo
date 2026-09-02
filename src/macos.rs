@@ -11,6 +11,7 @@ use objc2_foundation::{NSArray, NSString, NSURL};
 use std::io;
 use std::process::ExitStatus;
 use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Serializes the snapshot → open → PID-claim window in `spawn_piped`.
 /// The lookup uses NSRunningApplication's bundle-ID set diff, which is
@@ -25,27 +26,167 @@ static SPAWN_PIPED_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) struct MacOSHandle {
     app: Retained<NSRunningApplication>,
     pid: u32,
+    guard: std::sync::Arc<FocusGuard>,
 }
 
 impl MacOSHandle {
+    pub(crate) fn new(app: Retained<NSRunningApplication>, pid: u32) -> Self {
+        Self { app, pid, guard: Default::default() }
+    }
+
+    /// For the next `window`, undo any activation the app grabs for itself.
+    /// Studio activates itself when a test session starts or ends, which
+    /// pulls keyboard focus away from whatever the user is typing into —
+    /// on any display. While the guard is armed, the moment the app becomes
+    /// frontmost without a deliberate switch (see
+    /// `user_switched_deliberately`), activation is handed back to the app
+    /// the user was in — key window only, so the app stays where it was
+    /// raised. Re-arming extends the window; a deliberate switch to the app
+    /// ends it early.
+    pub fn guard_focus(&self, window: Duration) {
+        use std::sync::atomic::Ordering;
+        let until = Instant::now() + window;
+        {
+            let mut d = self.guard.deadline.lock().unwrap_or_else(|e| e.into_inner());
+            *d = Some(d.map_or(until, |cur| cur.max(until)));
+        }
+        if self.guard.running.swap(true, Ordering::SeqCst) {
+            tracing::debug!(pid = self.pid, window_secs = window.as_secs(), "focus guard: extended");
+            return; // already watching; deadline extended above
+        }
+        tracing::info!(
+            pid = self.pid, window_secs = window.as_secs(),
+            ax_trusted = ax::is_trusted(), ax_front = ?ax::focused_app_pid(), window_front = ?frontmost_pid_by_window_order(),
+            "focus guard: armed"
+        );
+        let guard = self.guard.clone();
+        let pid = self.pid;
+        let _ = std::thread::Builder::new()
+            .name("launch-control-focus-guard".into())
+            .spawn(move || {
+                let mut prev = frontmost_pid().filter(|&p| p != pid);
+                loop {
+                    let deadline = *guard.deadline.lock().unwrap_or_else(|e| e.into_inner());
+                    if deadline.map_or(true, |d| Instant::now() >= d) {
+                        break;
+                    }
+                    match frontmost_pid() {
+                        Some(p) if p == pid => {
+                            if user_switched_deliberately() {
+                                tracing::info!(pid, "focus guard: user switched to the app; standing down");
+                                break;
+                            }
+                            match prev {
+                                Some(prev_pid) => {
+                                    reactivate_key_window_only(prev_pid);
+                                    tracing::info!(pid, prev = prev_pid, "focus guard: app activated itself; activation handed back");
+                                }
+                                None => tracing::debug!(pid, "focus guard: app activated itself; nothing to hand back to"),
+                            }
+                        }
+                        Some(p) => prev = Some(p),
+                        None => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                guard.running.store(false, Ordering::SeqCst);
+            });
+    }
+
+    /// Bring the app to the front of its own display. Keyboard focus moves
+    /// to it only when the user is already working on that display; when
+    /// their focused window is on another display, the app is raised where
+    /// it is and activation is handed straight back, so a Studio on the
+    /// second monitor never pulls typing away from the editor on the first.
     pub fn focus(&self) -> Result<()> {
+        self.focus_relative_to(UserFocus::capture())
+    }
+
+    /// `focus` against a user position captured earlier (before a launch,
+    /// when the app may since have activated itself on startup).
+    pub(crate) fn focus_relative_to(&self, user: UserFocus) -> Result<()> {
         if self.app.isTerminated() {
             return Err(Error::Terminated);
         }
-        // Unhide first — activateFromApplication can fail on hidden apps.
+        // Unhide first — activation can fail on hidden apps.
         if self.app.isHidden() {
             self.app.unhide();
         }
-        // Use activateFromApplication to bring the app to the foreground.
-        // ActivateAllWindows brings all windows forward (not just main/key).
+        let mine = display::of_app_window(self.pid);
+        let same_display = match (mine, user.display) {
+            (Some(a), Some(b)) => a == b,
+            _ => true, // geometry unknown: behave like a plain activation
+        };
+        let hand_back = if same_display || display::is_single() {
+            None
+        } else {
+            user.pid.filter(|&p| p != self.pid)
+        };
+        let activated = frontmost_pid() == Some(self.pid) || self.activate_all_windows();
+        match hand_back {
+            Some(prev) => {
+                // Activation has landed (windows ordered front); now put the
+                // user's key window back above them and return their focus.
+                reactivate_key_window_only(prev);
+                tracing::info!(
+                    pid = self.pid, prev, activated, display = ?mine, user_display = ?user.display,
+                    "focus: raised on its own display, activation handed back"
+                );
+            }
+            None => tracing::info!(pid = self.pid, activated, display = ?mine, "focus: activated"),
+        }
+        if !activated && hand_back.is_none() {
+            return Err(Error::Platform(format!("focus: pid {} did not become frontmost", self.pid)));
+        }
+        Ok(())
+    }
+
+    /// Activate with every window ordered front, and confirm it. The
+    /// AppKit call's return value is unreliable from CLI processes (often
+    /// false when it worked), and cooperative activation can also refuse it
+    /// outright — so check who is frontmost and fall back to the AX route,
+    /// which is honored for any AX-trusted process.
+    fn activate_all_windows(&self) -> bool {
         let current = NSRunningApplication::currentApplication();
-        // activateFromApplication return value is unreliable from CLI processes —
-        // it often returns false even when activation succeeds.
         self.app.activateFromApplication_options(
             &current,
             NSApplicationActivationOptions::ActivateAllWindows,
         );
-        Ok(())
+        if wait_frontmost(self.pid, Duration::from_millis(400)) {
+            return true;
+        }
+        let ax_err = ax::set_frontmost_app(self.pid);
+        let ok = wait_frontmost(self.pid, Duration::from_millis(400));
+        tracing::debug!(pid = self.pid, ax_err, ok, "activate: AppKit activation not honored, used AX");
+        ok
+    }
+
+    /// Activate unconditionally, keyboard focus included — for callers about
+    /// to inject keystrokes, which only reach the frontmost app. Returns the
+    /// pid to hand activation back to afterwards (`restore_focus`) when the
+    /// user was working on a different display, else `None`.
+    pub fn activate(&self) -> Result<Option<u32>> {
+        if self.app.isTerminated() {
+            return Err(Error::Terminated);
+        }
+        if self.app.isHidden() {
+            self.app.unhide();
+        }
+        let user = UserFocus::capture();
+        let mine = display::of_app_window(self.pid);
+        let hand_back = match (mine, user.display) {
+            (Some(a), Some(b)) if a != b && !display::is_single() => user.pid.filter(|&p| p != self.pid),
+            _ => None,
+        };
+        if frontmost_pid() != Some(self.pid) && !self.activate_all_windows() {
+            return Err(Error::Platform(format!("activate: pid {} did not become frontmost", self.pid)));
+        }
+        Ok(hand_back)
+    }
+
+    /// Hand activation back to `prev` (from `activate`), key window only.
+    pub fn restore_focus(&self, prev: u32) {
+        reactivate_key_window_only(prev);
     }
 
     /// Send a keystroke directly to this process without requiring focus.
@@ -93,6 +234,16 @@ mod cg_ffi {
     pub type CGEventFlags = u64;
     pub type CGKeyCode = u16;
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct CGPoint { pub x: f64, pub y: f64 }
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct CGSize { pub width: f64, pub height: f64 }
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct CGRect { pub origin: CGPoint, pub size: CGSize }
+
     // CGEventTapLocation values — where the event enters the event stream.
     // kCGSessionEventTap (1) is the window-server session queue; NSApp of the
     // frontmost app drains it continuously, which is why synthetic Cmd+S via
@@ -128,18 +279,265 @@ mod cg_ffi {
         pub fn CGEventPostToPid(pid: libc::pid_t, event: CGEventRef);
 
         pub fn CFRelease(cf: *mut c_void);
+
+        // Display geometry in the global CG space (origin at the top-left of
+        // the main display, y down) — the same space AX reports window
+        // positions in, so the two compare without any flipping.
+        pub fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        pub fn CGDisplayBounds(display: u32) -> CGRect;
+        // Cursor location in that same space. CGEventCreate(NULL) snapshots
+        // the HID state from any thread; NSEvent.mouseLocation would need the
+        // main thread and a coordinate flip.
+        pub fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
+        pub fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
+        // User-input recency, for telling a self-activation apart from a
+        // deliberate switch. State id 0 = kCGEventSourceStateCombinedSessionState.
+        pub fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: u32) -> f64;
+        pub fn CGEventSourceKeyState(state_id: i32, key: CGKeyCode) -> bool;
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        // On-screen windows, front to back. No TCC gate, unlike AX.
+        pub fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        pub fn CFArrayGetCount(array: *const c_void) -> isize;
+        pub fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
+        pub fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        pub fn CFNumberGetValue(number: *const c_void, the_type: isize, out: *mut c_void) -> u8;
+        pub fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const i8, encoding: u32) -> *const c_void;
+    }
+    pub const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0;
+    pub const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    pub const K_CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+    pub const K_CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+    pub const K_CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+    pub const K_VK_COMMAND: CGKeyCode = 0x37;
+}
+
+/// Owner pid of the frontmost normal (layer 0) on-screen window — the
+/// active app's key window in practice. Public CoreGraphics, no TCC gate,
+/// and live: the fallback for processes the AX server will not talk to.
+fn frontmost_pid_by_window_order() -> Option<u32> {
+    use cg_ffi::*;
+    let list = unsafe {
+        CGWindowListCopyWindowInfo(
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+            0,
+        )
+    };
+    if list.is_null() {
+        return None;
+    }
+    let key = |name: &'static str| unsafe {
+        CFStringCreateWithCString(std::ptr::null(), name.as_ptr() as *const i8, 0x0800_0100)
+    };
+    let (k_layer, k_pid) = (key("kCGWindowLayer\0"), key("kCGWindowOwnerPID\0"));
+    let mut found = None;
+    let n = unsafe { CFArrayGetCount(list) };
+    for i in 0..n {
+        let dict = unsafe { CFArrayGetValueAtIndex(list, i) };
+        if dict.is_null() {
+            continue;
+        }
+        let mut layer: i32 = -1;
+        let mut pid: i32 = 0;
+        let l = unsafe { CFDictionaryGetValue(dict, k_layer) };
+        let p = unsafe { CFDictionaryGetValue(dict, k_pid) };
+        if l.is_null() || p.is_null() {
+            continue;
+        }
+        unsafe {
+            CFNumberGetValue(l, 3, &mut layer as *mut _ as *mut _); // kCFNumberSInt32Type
+            CFNumberGetValue(p, 3, &mut pid as *mut _ as *mut _);
+        }
+        if layer == 0 && pid > 0 {
+            found = Some(pid as u32);
+            break;
+        }
+    }
+    unsafe {
+        CFRelease(k_layer as *mut _);
+        CFRelease(k_pid as *mut _);
+        CFRelease(list as *mut _);
+    }
+    found
+}
+
+/// Did the user just act in a way that explains an app becoming frontmost —
+/// a mouse-down in the last half second (a click on its window) or ⌘ held
+/// right now (⌘-Tab)? Typing in another app is deliberately *not* counted:
+/// that is exactly what the user is doing when Studio steals focus.
+fn user_switched_deliberately() -> bool {
+    use cg_ffi::*;
+    let recent = |t: u32| unsafe { CGEventSourceSecondsSinceLastEventType(0, t) } < 0.5;
+    recent(K_CG_EVENT_LEFT_MOUSE_DOWN)
+        || recent(K_CG_EVENT_RIGHT_MOUSE_DOWN)
+        || recent(K_CG_EVENT_OTHER_MOUSE_DOWN)
+        || unsafe { CGEventSourceKeyState(0, K_VK_COMMAND) }
+}
+
+/// Shared state of a handle's focus guard (see `MacOSHandle::guard_focus`).
+#[derive(Default)]
+pub(crate) struct FocusGuard {
+    deadline: Mutex<Option<Instant>>,
+    running: std::sync::atomic::AtomicBool,
+}
+
+/// Which display a point, an app's front window, or the cursor is on.
+/// Ids are CGDirectDisplayIDs; nothing here needs the main thread.
+mod display {
+    use super::cg_ffi::*;
+
+    fn active() -> Vec<(u32, CGRect)> {
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        let err = unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+        if err != 0 {
+            return Vec::new();
+        }
+        ids[..count as usize]
+            .iter()
+            .map(|&id| (id, unsafe { CGDisplayBounds(id) }))
+            .collect()
+    }
+
+    pub fn for_point(x: f64, y: f64) -> Option<u32> {
+        active()
+            .into_iter()
+            .find(|(_, b)| {
+                x >= b.origin.x
+                    && x < b.origin.x + b.size.width
+                    && y >= b.origin.y
+                    && y < b.origin.y + b.size.height
+            })
+            .map(|(id, _)| id)
+    }
+
+    pub fn under_cursor() -> Option<u32> {
+        let ev = unsafe { CGEventCreate(std::ptr::null_mut()) };
+        if ev.is_null() {
+            return None;
+        }
+        let p = unsafe { CGEventGetLocation(ev) };
+        unsafe { CFRelease(ev) };
+        for_point(p.x, p.y)
+    }
+
+    /// Display holding the centre of the app's focused (else main, else
+    /// first) window.
+    pub fn of_app_window(pid: u32) -> Option<u32> {
+        let (x, y) = super::ax::front_window_center(pid)?;
+        for_point(x, y)
+    }
+
+    pub fn is_single() -> bool {
+        active().len() <= 1
     }
 }
 
-/// Returns true if the given PID is currently the frontmost application
-/// according to NSWorkspace. Used to pick between `CGEventPost` (for
-/// frontmost targets) and `CGEventPostToPid` (for everything else).
-fn is_pid_frontmost(pid: u32) -> bool {
-    let workspace = NSWorkspace::sharedWorkspace();
-    match workspace.frontmostApplication() {
-        Some(app) => app.processIdentifier() == pid as libc::pid_t,
-        None => false,
+/// The user's working position, captured before anything gets activated:
+/// the frontmost app and the display holding its focused window (the
+/// cursor's display when that app has no window to ask).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UserFocus {
+    pub pid: Option<u32>,
+    pub display: Option<u32>,
+}
+
+impl UserFocus {
+    pub fn capture() -> Self {
+        let pid = frontmost_pid();
+        let display = pid.and_then(display::of_app_window).or_else(display::under_cursor);
+        Self { pid, display }
     }
+}
+
+/// Pid of the frontmost app — live via AX; NSWorkspace only as a fallback
+/// (see `ax::focused_app_pid` for why it cannot be trusted in-process).
+fn frontmost_pid() -> Option<u32> {
+    ax::focused_app_pid()
+        .or_else(frontmost_pid_by_window_order)
+        .or_else(|| {
+            NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .map(|a| a.processIdentifier() as u32)
+        })
+}
+
+fn wait_frontmost(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if frontmost_pid() == Some(pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Hand activation back to `pid`, bringing only its key window forward.
+/// `activateWithOptions(0)` orders just the key window front, whereas AX
+/// `AXFrontmost` and `ActivateAllWindows` order every window of the app
+/// front (verified on macOS 26, two displays) — the difference is what lets
+/// a window raised on the other display stay visible after the hand-back.
+/// Falls back to the AX route if cooperative activation ignores the call.
+#[allow(deprecated)]
+fn reactivate_key_window_only(pid: u32) {
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t) {
+        if app.isTerminated() {
+            return;
+        }
+        app.activateWithOptions(NSApplicationActivationOptions::empty());
+        if wait_frontmost(pid, Duration::from_millis(300)) {
+            return;
+        }
+        tracing::debug!(pid, "hand-back: activateWithOptions not honored, using AX");
+    }
+    let _ = ax::set_frontmost_app(pid);
+}
+
+/// `Child::focus` for an app this process did not launch.
+pub(crate) fn focus_pid(pid: u32) -> Result<()> {
+    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+        .ok_or_else(|| Error::NotFound(format!("no running application with pid {pid}")))?;
+    MacOSHandle::new(app, pid).focus()
+}
+
+/// A non-background launch raises the app through the display-aware
+/// `focus` once it has a window — never through Launch Services' own
+/// activation, which is unconditional and would pull focus from another
+/// display before the window even exists. Polls AX with short timeouts so
+/// an app that has not started answering AX yet cannot block.
+fn schedule_deferred_focus(pid: u32, user: UserFocus) {
+    let _ = std::thread::Builder::new()
+        .name("launch-control-focus".into())
+        .spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if ax::has_window(pid) {
+                    break;
+                }
+                let alive = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+                    .map(|a| !a.isTerminated())
+                    .unwrap_or(false);
+                if !alive || Instant::now() >= deadline {
+                    tracing::debug!(pid, alive, "deferred focus: no window appeared; leaving app as is");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t) else {
+                return;
+            };
+            let handle = MacOSHandle::new(app, pid);
+            if let Err(e) = handle.focus_relative_to(user) {
+                tracing::warn!(pid, "deferred focus failed: {e}");
+            }
+        });
 }
 
 /// Map keyboard_types::Code to macOS virtual keycodes.
@@ -203,11 +601,8 @@ fn send_keystroke_to_pid(pid: u32, keycode: u16, flags: u64) -> Result<()> {
     // the wrong app. Apple's own guidance (NSEvent docs): "CGEventPostToPSN
     // if you want to target a specific process, or post to kCGSessionEventTap
     // if you want to target the app with focus."
-    let frontmost = is_pid_frontmost(pid);
-    let actual_frontmost_pid = {
-        let workspace = NSWorkspace::sharedWorkspace();
-        workspace.frontmostApplication().map(|a| a.processIdentifier() as u32)
-    };
+    let actual_frontmost_pid = frontmost_pid();
+    let frontmost = actual_frontmost_pid == Some(pid);
     tracing::info!(
         pid,
         frontmost,
@@ -291,7 +686,12 @@ mod ax {
             attribute: CFStringRef,
             value: CFTypeRef,
         ) -> AXError;
+        fn AXValueGetValue(value: CFTypeRef, value_type: u32, out: *mut c_void) -> Boolean;
+        fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut libc::pid_t) -> AXError;
     }
+
+    const K_AX_VALUE_TYPE_CGPOINT: u32 = 1;
+    const K_AX_VALUE_TYPE_CGSIZE: u32 = 2;
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -315,6 +715,7 @@ mod ax {
         fn CFArrayGetValueAtIndex(array: CFArrayRef, idx: CFIndex) -> *const c_void;
         fn CFNumberGetValue(number: CFTypeRef, the_type: CFIndex, value_ptr: *mut c_void) -> Boolean;
         fn CFBooleanGetValue(boolean: CFTypeRef) -> Boolean;
+        fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
         // CFRelease is declared (with a *mut signature) in cg_ffi; reuse it.
     }
 
@@ -390,12 +791,85 @@ mod ax {
         }
     }
 
-    /// PID of the currently frontmost application, if any.
+    /// PID of the currently frontmost application, if any (live).
     fn frontmost_pid() -> Option<u32> {
-        use objc2_app_kit::NSWorkspace;
-        NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .map(|a| a.processIdentifier() as u32)
+        super::frontmost_pid()
+    }
+
+    pub(super) fn is_trusted() -> bool {
+        unsafe { AXIsProcessTrusted() != 0 }
+    }
+
+    /// Pid of the app that currently has focus, read live from the AX
+    /// server. `NSWorkspace.frontmostApplication` is a cached value that
+    /// only refreshes when the process pumps its main run loop — which a
+    /// CLI or a Tokio backend never does — so it reports whatever was true
+    /// at first use, indefinitely.
+    pub(super) fn focused_app_pid() -> Option<u32> {
+        let system = CFOwned(unsafe { AXUIElementCreateSystemWide() } as CFTypeRef);
+        if system.0.is_null() {
+            return None;
+        }
+        unsafe { AXUIElementSetMessagingTimeout(system.0 as AXUIElementRef, 0.5) };
+        let app = copy_attr(system.0 as AXUIElementRef, "AXFocusedApplication\0")?;
+        let mut pid: libc::pid_t = 0;
+        let err = unsafe { AXUIElementGetPid(app.0 as AXUIElementRef, &mut pid) };
+        (err == K_AX_ERROR_SUCCESS && pid > 0).then_some(pid as u32)
+    }
+
+    /// The app's AX element with a messaging timeout, so a target that is
+    /// busy or still launching bounds how long each attribute read blocks.
+    fn app_element(pid: u32, timeout_secs: f32) -> Option<CFOwned> {
+        let app = CFOwned(unsafe { AXUIElementCreateApplication(pid as libc::pid_t) } as CFTypeRef);
+        if app.0.is_null() {
+            return None;
+        }
+        unsafe { AXUIElementSetMessagingTimeout(app.0 as AXUIElementRef, timeout_secs) };
+        Some(app)
+    }
+
+    /// The app's focused window, else its main window, else its first.
+    fn front_window(app: AXUIElementRef) -> Option<CFOwned> {
+        if let Some(w) = copy_attr(app, "AXFocusedWindow\0") {
+            return Some(w);
+        }
+        if let Some(w) = copy_attr(app, "AXMainWindow\0") {
+            return Some(w);
+        }
+        let windows = copy_attr(app, "AXWindows\0")?;
+        if unsafe { CFArrayGetCount(windows.0) } == 0 {
+            return None;
+        }
+        let first = unsafe { CFArrayGetValueAtIndex(windows.0, 0) };
+        if first.is_null() {
+            return None;
+        }
+        Some(CFOwned(unsafe { CFRetain(first) }))
+    }
+
+    /// Centre of the app's front window in global CG coordinates.
+    pub(super) fn front_window_center(pid: u32) -> Option<(f64, f64)> {
+        let app = app_element(pid, 1.0)?;
+        let win = front_window(app.0 as AXUIElementRef)?;
+        let pos = copy_attr(win.0 as AXUIElementRef, "AXPosition\0")?;
+        let size = copy_attr(win.0 as AXUIElementRef, "AXSize\0")?;
+        let mut p = super::cg_ffi::CGPoint { x: 0.0, y: 0.0 };
+        let mut s = super::cg_ffi::CGSize { width: 0.0, height: 0.0 };
+        let ok_p = unsafe { AXValueGetValue(pos.0, K_AX_VALUE_TYPE_CGPOINT, &mut p as *mut _ as *mut c_void) };
+        let ok_s = unsafe { AXValueGetValue(size.0, K_AX_VALUE_TYPE_CGSIZE, &mut s as *mut _ as *mut c_void) };
+        if ok_p == 0 || ok_s == 0 {
+            return None;
+        }
+        Some((p.x + s.width / 2.0, p.y + s.height / 2.0))
+    }
+
+    /// Whether the app has a window yet. Short AX timeout: this polls a
+    /// launching app, whose first AX contact can otherwise block for seconds.
+    pub(super) fn has_window(pid: u32) -> bool {
+        match app_element(pid, 0.5) {
+            Some(app) => front_window(app.0 as AXUIElementRef).is_some(),
+            None => false,
+        }
     }
 
     /// Activate an app by setting kAXFrontmostAttribute on its AX application
@@ -403,7 +877,7 @@ mod ax {
     /// activation (macOS 14+) silently denies for CLI callers that are not
     /// themselves frontmost — the accessibility route is honored for any
     /// AX-trusted process (it is how window managers switch apps).
-    fn set_frontmost_app(pid: u32) -> AXError {
+    pub(super) fn set_frontmost_app(pid: u32) -> AXError {
         let app = CFOwned(unsafe { AXUIElementCreateApplication(pid as libc::pid_t) } as CFTypeRef);
         if app.0.is_null() {
             return -1;
@@ -556,7 +1030,7 @@ mod ax {
                     }
                     if enabled(item) == Some(false) {
                         if let Some(prev) = restore_front {
-                            let _ = set_frontmost_app(prev);
+                            super::reactivate_key_window_only(prev);
                         }
                         return Err(Error::Platform(format!(
                             "menu item '{title}' is disabled (even after unhide + activation flash)"
@@ -570,7 +1044,7 @@ mod ax {
                 // item is validated, but restoring first would re-order the
                 // app switch behind the pending AXPress on some runloops.
                 if let Some(prev) = restore_front {
-                    let _ = set_frontmost_app(prev);
+                    super::reactivate_key_window_only(prev);
                 }
                 if err == K_AX_ERROR_SUCCESS {
                     tracing::info!(pid, title, "ax: pressed menu item ({desc})");
@@ -710,10 +1184,15 @@ fn spawn_simple(cmd: &mut Command) -> Result<crate::Child> {
     let path_str = NSString::from_str(&bundle_path.to_string_lossy());
     let url = NSURL::fileURLWithPath(&path_str);
 
-    // Configure launch options
+    // Where the user is working, before the launch can disturb it.
+    let user = UserFocus::capture();
+
+    // Configure launch options. Never let Launch Services activate: that is
+    // unconditional and lands before the app has a window. Foreground
+    // launches are raised by `schedule_deferred_focus` instead.
     let config = NSWorkspaceOpenConfiguration::new();
     config.setCreatesNewApplicationInstance(true);
-    config.setActivates(!cmd.background);
+    config.setActivates(false);
     if cmd.background {
         config.setHides(true);
     }
@@ -783,6 +1262,8 @@ fn spawn_simple(cmd: &mut Command) -> Result<crate::Child> {
     // Extra hide call in case the app self-activates during startup
     if cmd.background {
         result.hide();
+    } else {
+        schedule_deferred_focus(pid as u32, user);
     }
 
     let exit_state = std::sync::Arc::new(std::sync::Mutex::new(crate::ExitState::default()));
@@ -793,7 +1274,7 @@ fn spawn_simple(cmd: &mut Command) -> Result<crate::Child> {
         stdout: None,
         stderr: None,
         exit_state,
-        inner: Some(MacOSHandle { app: result, pid: pid as u32 }),
+        inner: Some(MacOSHandle::new(result, pid as u32)),
     })
 }
 
@@ -905,11 +1386,17 @@ fn spawn_piped(cmd: &mut Command) -> Result<crate::Child> {
 
     // Spawn the helper. The helper does the actual NSWorkspace+pty work
     // internally and forwards the app's stdio to its own stdout/stderr.
+    // Where the user is working, before the launch can disturb it.
+    let user = UserFocus::capture();
+
     let mut helper_cmd = std::process::Command::new(&helper_bin);
     helper_cmd.args(&helper_prefix);
     helper_cmd.arg("--bundle").arg(&bundle_path);
     if cmd.background {
         helper_cmd.arg("--background");
+    } else {
+        // `open` must not activate either; see `schedule_deferred_focus`.
+        helper_cmd.arg("--no-activate");
     }
     if cmd.detached {
         helper_cmd.arg("--detached");
@@ -1003,9 +1490,11 @@ fn spawn_piped(cmd: &mut Command) -> Result<crate::Child> {
         if let Some(ref app) = app {
             app.hide();
         }
+    } else {
+        schedule_deferred_focus(pid, user);
     }
 
-    let inner = app.map(|app| MacOSHandle { app, pid });
+    let inner = app.map(|app| MacOSHandle::new(app, pid));
 
     // Drain helper subprocess stdout/stderr (each carries the app's
     // corresponding stream, forwarded by the helper's pty drain). These are
@@ -1079,6 +1568,7 @@ fn resolve_helper() -> Result<(std::path::PathBuf, Vec<String>)> {
 /// Reads args:
 ///   `--bundle <path>` (required) — `.app` bundle path
 ///   `--background`               — pass `-g -j` to `open` (no focus steal)
+///   `--no-activate`              — pass `-g` to `open`; the parent raises the app itself
 ///   `--detached`                 — survive parent death (don't exit on
 ///                                   parent-pid disappearance)
 ///   `--`  ... app args ...
@@ -1115,6 +1605,7 @@ pub(crate) fn run_helper_main_with_args(args: impl Iterator<Item = String>) -> !
     // Parse args
     let mut bundle: Option<std::path::PathBuf> = None;
     let mut background = false;
+    let mut no_activate = false;
     let mut detached = false;
     let mut app_args: Vec<String> = Vec::new();
     let mut iter = args;
@@ -1124,6 +1615,7 @@ pub(crate) fn run_helper_main_with_args(args: impl Iterator<Item = String>) -> !
                 bundle = iter.next().map(std::path::PathBuf::from);
             }
             "--background" => background = true,
+            "--no-activate" => no_activate = true,
             "--detached" => detached = true,
             "--" => {
                 app_args.extend(iter.by_ref());
@@ -1156,11 +1648,12 @@ pub(crate) fn run_helper_main_with_args(args: impl Iterator<Item = String>) -> !
         }
     }
     log_to(&log_path, &format!(
-        "starting pid={} ppid={} detached={} background={} bundle={}",
+        "starting pid={} ppid={} detached={} background={} no_activate={} bundle={}",
         std::process::id(),
         unsafe { libc::getppid() },
         detached,
         background,
+        no_activate,
         bundle.display(),
     ));
 
@@ -1184,6 +1677,8 @@ pub(crate) fn run_helper_main_with_args(args: impl Iterator<Item = String>) -> !
     open_cmd.arg("-n");
     if background {
         open_cmd.args(["-g", "-j"]);
+    } else if no_activate {
+        open_cmd.arg("-g");
     }
     open_cmd.arg("-a").arg(&bundle);
     open_cmd.arg("--stdout").arg(&stdout_slave_path);
