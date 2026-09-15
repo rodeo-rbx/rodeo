@@ -588,6 +588,13 @@ fn bind_to_lifetime_job(process_handle: HANDLE) {
     }
 }
 
+/// See [`crate::running_instance_cmdlines`]. Matches processes by image name
+/// (the `.exe` file name of `app_path`) and reads each raw command line.
+pub(crate) fn running_instance_cmdlines(app_path: &std::path::Path) -> Vec<String> {
+    let Some(exe_name) = app_path.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    pids_for_exe(exe_name).into_iter().filter_map(proc_cmdline).collect()
+}
+
 /// Read another process's command line via `NtQueryInformationProcess` +
 /// `ReadProcessMemory` of the PEB (x64 offsets: `ProcessParameters` at
 /// PEB+0x20, `CommandLine` UNICODE_STRING at params+0x70). Returns `None` if

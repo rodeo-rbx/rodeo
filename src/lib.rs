@@ -766,6 +766,28 @@ pub(crate) struct HelperInvocation {
 
 pub(crate) static HELPER_INVOCATION: std::sync::OnceLock<HelperInvocation> = std::sync::OnceLock::new();
 
+/// Command lines of every running instance of the app at `app_path` — a
+/// `.app` bundle (or a binary inside one) on macOS, an `.exe` on Windows —
+/// one string per process, arguments joined by single spaces. Processes that
+/// vanish or refuse inspection mid-scan are skipped. Paths may contain
+/// spaces, so callers looking for one argument should match a distinctive
+/// shape rather than split on whitespace. Empty on other platforms.
+pub fn running_instance_cmdlines(app_path: &Path) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::running_instance_cmdlines(app_path);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::running_instance_cmdlines(app_path);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app_path;
+        Vec::new()
+    }
+}
+
 /// Bring an already-running app to the front of its own display by pid —
 /// the same display-aware behavior as [`Child::focus`], for apps this
 /// process did not launch. macOS only.
