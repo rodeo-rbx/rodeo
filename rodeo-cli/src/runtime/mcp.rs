@@ -6,7 +6,8 @@ use tokio::sync::Mutex;
 /// Handle an `mcp.call` RPC request.
 ///
 /// The mcp_studio_id is already resolved by the reconciliation loop in studio_state.
-/// This just sets the active studio and forwards the tool call.
+/// This forwards the tool call targeted at that Studio: StudioMCP tools that act
+/// on a Studio take its id as a `studio_id` argument.
 pub async fn handle_mcp_call(
     studio_mcp: Arc<Mutex<Option<StudioMcpClient>>>,
     mcp_studio_id: &str,
@@ -28,19 +29,16 @@ pub async fn handle_mcp_call(
         }
     };
 
-    let set_start = std::time::Instant::now();
-    let set_res = mcp.set_active_studio(mcp_studio_id).await;
-    tracing::info!(
-        mcp_studio = mcp_short,
-        tool,
-        ok = set_res.is_ok(),
-        elapsed_ms = set_start.elapsed().as_millis() as u64,
-        "mcp.set_active_studio done"
-    );
-    set_res.map_err(|e| format!("set_active_studio failed: {e}"))?;
+    // list_roblox_studios is the one tool that targets no Studio.
+    let mut arguments = arguments.clone();
+    if tool != "list_roblox_studios" {
+        if let Value::Object(ref mut map) = arguments {
+            map.entry("studio_id").or_insert_with(|| Value::String(mcp_studio_id.to_string()));
+        }
+    }
 
     let call_start = std::time::Instant::now();
-    let call_res = mcp.call_tool(tool, arguments).await;
+    let call_res = mcp.call_tool(tool, &arguments).await;
     tracing::info!(
         mcp_studio = mcp_short,
         tool,

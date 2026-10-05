@@ -31,7 +31,8 @@ pub struct StudioInstanceInfo {
     pub error: Option<String>,
     /// StudioMCP's id for this Studio process, resolved asynchronously by
     /// polling `list_roblox_studios` after spawn. Used only at the
-    /// elevated-call boundary (`set_active_studio`) — not for routing.
+    /// elevated-call boundary (the `studio_id` of StudioMCP tool calls) — not
+    /// for routing.
     pub mcp_studio_id: Option<String>,
 }
 
@@ -1090,16 +1091,7 @@ pub async fn run_reconciliation(state: SharedBackendState) {
                     Ok(studios) => {
                         tracing::debug!(count = studios.len(), "list_studios returned");
                         for studio in &studios {
-                            tracing::debug!(mcp_studio_id = studio.mcp_studio_id.as_str(), "setting active studio");
-                            match mcp.set_active_studio(&studio.mcp_studio_id).await {
-                                Ok(_) => {
-                                    tracing::debug!("set_active_studio ok, executing unifier");
-                                }
-                                Err(e) => {
-                                    tracing::debug!("set_active_studio failed: {e}");
-                                    continue;
-                                }
-                            }
+                            tracing::debug!(mcp_studio_id = studio.mcp_studio_id.as_str(), "executing unifier");
                             // Unify code fires the MCP studio id into the plugin so
                             // it populates its state.mcp_studio_id. Note: the event
                             // string keys ("studio_id_from_server"/_client) are kept
@@ -1124,7 +1116,7 @@ pub async fn run_reconciliation(state: SharedBackendState) {
                             // (otherwise they stay unresolved and `test:*`
                             // targets never route to them).
                             for datamodel_type in ["Edit", "Server", "Client"] {
-                                match mcp.execute_luau(&unify_code, datamodel_type).await {
+                                match mcp.execute_luau(&studio.mcp_studio_id, &unify_code, datamodel_type).await {
                                     Ok(r) => tracing::debug!(datamodel_type, result = ?r, "execute_luau ok"),
                                     Err(e) => tracing::trace!(datamodel_type, "execute_luau skipped: {e}"),
                                 }

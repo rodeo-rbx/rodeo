@@ -174,29 +174,21 @@ impl StudioMcpClient {
         Ok(entries)
     }
 
-    /// Set the active Studio DataModel for subsequent tool calls.
-    /// `mcp_studio_id` is StudioMCP's own id (not our canonical studio_id).
-    pub async fn set_active_studio(&mut self, mcp_studio_id: &str) -> Result<(), String> {
-        self.call_tool(
-            "set_active_studio",
-            &serde_json::json!({ "studio_id": mcp_studio_id }),
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Execute Luau code via StudioMCP's execute_luau tool in a specific
-    /// DataModel. `datamodel_type` must be one of "Edit", "Server", "Client"
-    /// (StudioMCP requires it; the target type must be available in the
-    /// Studio's current mode or the call errors).
+    /// Studio and DataModel. `mcp_studio_id` is StudioMCP's own id for the
+    /// Studio (not our canonical studio_id); every StudioMCP tool that acts on
+    /// a Studio requires it. `datamodel_type` must be one of "Edit", "Server",
+    /// "Client" (the target type must be available in the Studio's current
+    /// mode or the call errors).
     pub async fn execute_luau(
         &mut self,
+        mcp_studio_id: &str,
         code: &str,
         datamodel_type: &str,
     ) -> Result<String, String> {
         self.call_tool(
             "execute_luau",
-            &serde_json::json!({ "code": code, "datamodel_type": datamodel_type }),
+            &serde_json::json!({ "studio_id": mcp_studio_id, "code": code, "datamodel_type": datamodel_type }),
         )
         .await
     }
@@ -212,5 +204,4 @@ pub struct StudioEntry {
     #[serde(rename = "id")]
     pub mcp_studio_id: String,
     pub name: Option<String>,
-    pub active: bool,
 }
