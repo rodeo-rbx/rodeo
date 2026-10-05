@@ -44,6 +44,14 @@ async fn handle_request(
     state: SharedBackendState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if hyper_tungstenite::is_upgrade_request(&req) {
+        // Browsers send Origin on every WebSocket handshake and WebSockets
+        // aren't covered by CORS, so any web page could otherwise open a
+        // plugin connection to this localhost port, pose as a DOM and receive
+        // runs. Studio's WebStreamClient sends no Origin.
+        if let Some(origin) = req.headers().get(hyper::header::ORIGIN) {
+            tracing::warn!("refused WebSocket upgrade from browser origin {origin:?}");
+            return text_response(StatusCode::FORBIDDEN, "Forbidden");
+        }
         match hyper_tungstenite::upgrade(&mut req, None) {
             Ok((response, ws_future)) => {
                 tokio::spawn(async move {
