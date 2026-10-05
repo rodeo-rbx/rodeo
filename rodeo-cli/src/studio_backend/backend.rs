@@ -242,28 +242,68 @@ async fn guard_relay_size(m: &proto::BackendMessage, state: &SharedBackendState)
 /// resolves on a terminal status; absence would leave it (and the run
 /// client blocked on it) hanging forever. SessionExited is still emitted
 /// so the master reconciles pending runs scoped to the dead session.
+///
+/// Only a launch that hasn't connected yet is failed, checked under the same
+/// lock as the transition so a plugin connecting at that moment wins. Returns
+/// whether it failed the launch.
 async fn fail_launch(
     state: &SharedBackendState,
     outgoing_tx: &mpsc::UnboundedSender<proto::BackendMessage>,
     session_guid: &str,
     reason: String,
-) {
+) -> bool {
+    {
+        let mut guard = state.lock().await;
+        let Some(inst) = guard.studio_instances.get_mut(session_guid) else { return false };
+        if inst.status != "launching" && inst.status != "pending" {
+            return false;
+        }
+        inst.status = "error".to_string();
+        inst.error = Some(reason.clone());
+        if let Some(ref notify) = guard.snapshot_trigger { notify.notify_one(); }
+    }
     let _ = outgoing_tx.send(proto::BackendMessage {
         msg: Some(proto::backend_message::Msg::SessionExited(
             Box::new(proto::SessionExited {
                 session_guid: session_guid.to_string(),
-                reason: reason.clone(),
+                reason,
                 ..Default::default()
             })
         )),
         ..Default::default()
     });
-    let mut guard = state.lock().await;
-    if let Some(inst) = guard.studio_instances.get_mut(session_guid) {
-        inst.status = "error".to_string();
-        inst.error = Some(reason);
-    }
-    if let Some(ref notify) = guard.snapshot_trigger { notify.notify_one(); }
+    true
+}
+
+/// How long a launched Studio has to connect its plugin before the launch
+/// fails: `RODEO_LAUNCH_TIMEOUT` seconds, default 120. `0` means no limit.
+fn launch_timeout() -> Option<std::time::Duration> {
+    const DEFAULT_SECS: u64 = 120;
+    let secs = match std::env::var("RODEO_LAUNCH_TIMEOUT") {
+        Ok(v) => v.trim().parse::<u64>().unwrap_or_else(|_| {
+            warn!("RODEO_LAUNCH_TIMEOUT={v:?} is not a whole number of seconds; using {DEFAULT_SECS}");
+            DEFAULT_SECS
+        }),
+        Err(_) => DEFAULT_SECS,
+    };
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
+/// Sign-in state from the log of the Studio launched for `session_guid`
+/// (matched by its RunScript bootstrap path). `None` if the log isn't found.
+async fn launched_studio_sign_in(
+    session_guid: &str,
+    since: std::time::SystemTime,
+) -> Option<rbx_control::studio::log::SignIn> {
+    let marker = format!("rodeo-bootstrap-{session_guid}");
+    tokio::task::spawn_blocking(move || {
+        let dir = rbx_control::paths::roblox_logs_dir()?;
+        let log = std::fs::read_to_string(rbx_control::studio::log::find_log(&dir, &marker, since)?).ok()?;
+        Some(rbx_control::studio::log::sign_in_state(&log))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 async fn handle_master_msg(
@@ -598,6 +638,7 @@ async fn handle_master_msg(
 
                 // Spawn Studio (blocking). Handle is available immediately;
                 // readiness is signaled by the plugin's WS connect.
+                let launch_started = std::time::SystemTime::now();
                 let spawn_result = tokio::task::spawn_blocking(move || Studio::spawn(target, opts)).await;
                 tracing::info!(session_guid = sg_short, ok = spawn_result.is_ok(), "launch: spawn_blocking returned");
                 let instance = match spawn_result {
@@ -702,6 +743,56 @@ async fn handle_master_msg(
                     });
                 }
 
+                // Launch deadline (#13). Studio shows its sign-in prompt before
+                // it loads plugins, so a signed-out Studio never connects and
+                // the launch, with every run pinned to it, would wait forever.
+                // Past the deadline, fail the launch and close the Studio. Holds
+                // only a Weak ref, like the pre-warm above.
+                if let Some(timeout) = launch_timeout() {
+                    let deadline_state = ls.clone();
+                    let deadline_out_tx = out_tx.clone();
+                    let deadline_session = session_guid.clone();
+                    let deadline_studio = std::sync::Arc::downgrade(&instance);
+                    tokio::spawn(async move {
+                        use rbx_control::studio::log::SignIn;
+                        tokio::time::sleep(timeout).await;
+                        let launching = deadline_state.lock().await.studio_instances
+                            .get(&deadline_session)
+                            .is_some_and(|i| i.status == "launching");
+                        if !launching {
+                            return;
+                        }
+                        // Let a sign-in that is under way finish first: killing
+                        // Studio mid sign-in can leave the account signed out.
+                        let mut sign_in = launched_studio_sign_in(&deadline_session, launch_started).await;
+                        let sign_in_wait = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                        while sign_in == Some(SignIn::InProgress) && std::time::Instant::now() < sign_in_wait {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            sign_in = launched_studio_sign_in(&deadline_session, launch_started).await;
+                        }
+                        let secs = timeout.as_secs();
+                        let session = &deadline_session[..8.min(deadline_session.len())];
+                        let reason = if sign_in == Some(SignIn::Failed) {
+                            format!("launch_failed: Studio (session {session}) did not connect within {secs}s: it is waiting for you to sign in to Roblox (its saved sign-in expired). Sign in to Roblox Studio, then run again")
+                        } else {
+                            format!("launch_failed: Studio (session {session}) did not connect within {secs}s: the rodeo plugin never loaded in it. Studio may be showing a dialog or still loading the place; set RODEO_LAUNCH_TIMEOUT to allow longer")
+                        };
+                        if !fail_launch(&deadline_state, &deadline_out_tx, &deadline_session, reason.clone()).await {
+                            return;
+                        }
+                        warn!(session_guid = %deadline_session, "{reason}");
+                        let Some(studio) = deadline_studio.upgrade() else { return };
+                        // Never save: the place may not have loaded.
+                        tokio::task::spawn_blocking(move || {
+                            studio.mark_saved();
+                            studio.cleanup();
+                            studio.kill();
+                        })
+                        .await
+                        .ok();
+                    });
+                }
+
                 // Event-driven exit handler — replaces the old 2-second polling
                 // monitor. `Child::on_exit` fires via OS-level wait/kqueue, so we
                 // learn about death immediately. The callback synthesizes a
@@ -721,12 +812,17 @@ async fn handle_master_msg(
                     let exit_out_tx = exit_out_tx.clone();
                     let exit_instance = exit_instance.clone();
                     tokio::spawn(async move {
-                        let was_launching = {
+                        let status = {
                             let guard = exit_state.lock().await;
-                            guard.studio_instances.get(&session_guid)
-                                .map(|i| i.status == "launching" || i.status == "pending")
-                                .unwrap_or(false)
+                            guard.studio_instances.get(&session_guid).map(|i| i.status.clone())
                         };
+                        // A launch the deadline already failed has reported its
+                        // reason and SessionExited; keep that reason.
+                        if status.as_deref() == Some("error") {
+                            exit_instance.cleanup();
+                            return;
+                        }
+                        let was_launching = matches!(status.as_deref(), Some("launching" | "pending"));
                         let reason = if was_launching {
                             "launch_failed: Studio process exited during launch".to_string()
                         } else {
