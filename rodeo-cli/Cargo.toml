@@ -20,7 +20,7 @@ rodeo-client = { path = "../rodeo-client" }
 rbx-control = { path = "./rbx-control" }
 
 # App launch (background mode, focus control)
-launch-control = { path = "../submodules/launch-control", features = ["tokio"] }
+launch-control = { path = "../launch-control", features = ["tokio"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

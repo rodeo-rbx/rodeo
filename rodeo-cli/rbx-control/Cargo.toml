@@ -26,7 +26,7 @@ notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 
 # Process launch
-launch-control = { path = "../../submodules/launch-control", features = ["tokio"] }
+launch-control = { path = "../../launch-control", features = ["tokio"] }
 
 # Atomic file patch + restore (fflags + Studio UI layout)
 filepatch = { path = "../filepatch" }

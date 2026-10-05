@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Cross-platform native app automation for Rust. Launch, focus, control, and capture output from GUI applications programmatically."
 license = "MIT"
-repository = "https://github.com/revvy02/launch-control"
 
 [dependencies]
 keyboard-types = "0.7"
-parent-exit = { path = "../../parent-exit" }
+parent-exit = { path = "../parent-exit" }
 tokio = { version = "1", default-features = false, features = ["rt"], optional = true }
 tracing = "0.1"
 
