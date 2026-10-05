@@ -37,16 +37,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # stable docs versions build from release tags
-      - name: Init launch-control submodule
-        # Only the cargo-workspace-member submodule is needed to compile the
-        # CLI for docs-gen below. submodules/lute and submodules/lune are
-        # reference checkouts (local tooling + conformance provenance) that
-        # this build never reads, so init explicitly rather than recursively.
-        # Force HTTPS: launch-control's .gitmodules URL is SSH and CI has no
-        # SSH key.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init submodules/launch-control
 
       # Regenerate cli.md from the clap definitions and diff against the
       # committed copy. A non-zero diff means someone changed a flag without

@@ -1,6 +1,3 @@
-[submodule "submodules/launch-control"]
-	path = submodules/launch-control
-	url = git@github.com:revvy02/launch-control.git
 [submodule "submodules/lute"]
 	path = submodules/lute
 	url = https://github.com/luau-lang/lute.git

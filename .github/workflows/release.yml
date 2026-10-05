@@ -17,15 +17,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Init launch-control submodule
-        # Only one cargo-workspace-member submodule is needed for the
-        # build; the rest are private/personal/reference forks that
-        # `submodules: recursive` would fail to clone. Force HTTPS
-        # since `.gitmodules` uses SSH URLs and CI has no SSH key.
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init submodules/launch-control
-
       - name: Extract version from tag
         id: version
         run: |
@@ -113,11 +104,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Init launch-control submodule
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init submodules/launch-control
 
       - name: Download plugin artifact
         uses: actions/download-artifact@v4
