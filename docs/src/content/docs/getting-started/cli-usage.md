@@ -78,6 +78,27 @@ rodeo run --source 'return game.PlaceId'
 
 When you're done, quit the Studio yourself; because it's detached, rodeo won't close it for you.
 
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `RODEO_PORT` | Master port when `--port` isn't given. Default `44872`. See [Port](#port). |
+| `RODEO_LAUNCH_TIMEOUT` | Seconds a Studio that rodeo launched has to connect before the launch fails and rodeo closes that Studio. Default `120`; `0` waits indefinitely. |
+| `RODEO_SKIP_VERSION_CHECK` | `1` turns a build mismatch between the CLI, the serve and the plugin from an error into a warning. |
+| `RODEO_PROFILE_FRAME_INTERVAL` | With `--profile`, frames between microprofiler captures. Default `60`. |
+| `RODEO_PROFILE_NUM_FRAMES` | With `--profile`, frames in each microprofiler capture. Default `60`. |
+| `RODEO_CAPTURE_DIR` | Directory `roblox.captureViewport` reads Studio's captures from. Default `~/Library/Roblox/tmp-capture-storage` on macOS, `%LOCALAPPDATA%\Roblox\tmp-capture-storage` on Windows. |
+| `ROBLOX_STUDIO_PATH` | Studio install to launch instead of the installed one: the `.app` bundle on macOS; on Windows a version folder, or `%LOCALAPPDATA%\Roblox` for its newest version. |
+| `RODEO_OPEN_CLOUD_API_KEY` | Open Cloud API key with the `asset:read` permission, used to look up a published place's latest version. |
+| `RODEO_VERBOSE` | Any value: debug logging, as `--verbose`. |
+| `RUST_LOG` | Log filter in `tracing` `EnvFilter` syntax, for example `rodeo=trace`. Overrides the default levels and `RODEO_VERBOSE`. |
+| `RODEO_NO_TIMESTAMPS` | Any value: log lines on stderr have no timestamps. |
+| `NO_COLOR` / `FORCE_COLOR` | Non-empty: colored log output off / on, whatever the terminal. |
+| `RODEO_LOG_DIR` | Where the serve writes its log files. Default `.rodeo/.temp/logs`. |
+| `RODEO_STUDIOMCP_VERBOSE` | Any value: StudioMCP (used by `--context elevated`) logs verbosely, alongside the serve's logs. |
+
+The serve reads `RODEO_LAUNCH_TIMEOUT`, `RODEO_PROFILE_*`, `ROBLOX_STUDIO_PATH`, `RODEO_LOG_DIR` and `RODEO_STUDIOMCP_VERBOSE` when it starts. When `rodeo run` starts its own serve, set them for that command.
+
 ## Where to go next
 
 See the full [CLI reference](/rodeo/cli/) for every subcommand and flag, or move on to [Runtime usage](/rodeo/getting-started/runtime-usage/) for what scripts can do inside Studio.
