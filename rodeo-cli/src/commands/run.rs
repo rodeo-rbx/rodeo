@@ -321,6 +321,20 @@ fn prepare_execution(args: RunArgs, resolved: ResolvedScript) -> Result<RunConfi
     })
 }
 
+/// The serve on `cfg.port` to launch onto: the running one once it is known to
+/// be this build, or a new one this run owns (`Some`). The version check comes
+/// first because launching onto another build's serve and only then refusing
+/// it would leave the launched Studio behind on that serve.
+async fn ensure_serve(cfg: &RunConfig) -> Result<Option<super::serve::ServeHandle>> {
+    let client = RodeoClient::connect(&cfg.host, cfg.port)?;
+    if client.is_healthy().await {
+        client.check_version().await?;
+        Ok(None)
+    } else {
+        Ok(Some(super::serve::start_full_serve(cfg.port).await?))
+    }
+}
+
 /// Connect to (or launch) the server and execute the script.
 async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
     let mut serve_handle: Option<super::serve::ServeHandle> = None;
@@ -333,10 +347,7 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         // true when --place was provided, but `rodeo run --mode play
         // --dom client --clients N -s 'code'` against an already-running
         // play server must still spawn the client.
-        if !RodeoClient::connect(&cfg.host, cfg.port)?.is_healthy().await {
-            let handle = super::serve::start_full_serve(cfg.port).await?;
-            serve_handle = Some(handle);
-        }
+        serve_handle = ensure_serve(&cfg).await?;
 
         let resolved = cfg.resolved()?.expect("is_play implies a resolved route");
         _play_handles = Some(launch_play_processes(
@@ -357,10 +368,7 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         // session on it (the backend supports N concurrent sessions). The
         // run below is pinned to the launched session so the script provably
         // executes in THIS place, not load-balanced across resident studios.
-        if !RodeoClient::connect(&cfg.host, cfg.port)?.is_healthy().await {
-            let handle = super::serve::start_full_serve(cfg.port).await?;
-            serve_handle = Some(handle);
-        }
+        serve_handle = ensure_serve(&cfg).await?;
 
         if let Some(ref target) = cfg.place_target {
             let req = build_launch_request(target, !cfg.focus, cfg.save.clone(), cfg.fflags.clone(), cfg.detached, cfg.show_widgets.clone(), cfg.profile.is_some(), &cfg.host, cfg.port).await?;

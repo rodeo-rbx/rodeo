@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { pluginsDir, runRodeo } from "../helpers.js";
+import { pluginsDir, runRodeo, waitUntil } from "../helpers.js";
 
 // Two rodeo versions side by side, run the way projects run them: each
 // fixture directory pins its rodeo (and port) in its own `.mise.toml`.
@@ -139,5 +139,23 @@ describe.skipIf(!mise)("two rodeo versions side by side (CLI)", () => {
     // removes it.
     expect(existsSync(join(pluginsDir(), "rodeo.rbxm"))).toBe(true);
   });
+
+  it("run --place refuses another build's serve before launching a Studio onto it", async () => {
+    const serve = Bun.spawn([prevBin, "serve", "--port", String(PREV_PORT)], { cwd: PREV_DIR, stdout: "pipe", stderr: "pipe" });
+    try {
+      await waitUntil(() => sh([prevBin, "state", "--port", String(PREV_PORT), "--json"]).ok, 30_000, "the previous release's serve");
+
+      const run = runRodeo(["run", "--port", String(PREV_PORT), "--place", "--source", "return 1"], { timeout: 120_000 });
+      expect(run.ok).toBe(false);
+      expect(run.stdout + run.stderr).toContain("RODEO_SKIP_VERSION_CHECK");
+
+      // The run must not have left a Studio on the other build's serve.
+      const state = JSON.parse(sh([prevBin, "state", "--port", String(PREV_PORT), "--json"]).stdout) as StateJson;
+      expect((state.studios ?? []).filter((s) => s.sessionId)).toEqual([]);
+    } finally {
+      serve.kill();
+      await serve.exited;
+    }
+  }, 180_000);
 });
 
