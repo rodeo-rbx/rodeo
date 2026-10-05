@@ -101,6 +101,11 @@ pub struct Studio {
     /// Cleaned-once flag — guarantees `cleanup()` runs its body only once.
     cleaned: AtomicBool,
     detached: bool,
+    /// Text unique to this launch's command line (its RunScript bootstrap,
+    /// else its place file), used to find its log. `None` when neither.
+    log_marker: Option<String>,
+    /// When this Studio was spawned; its log is newer.
+    spawned_at: std::time::SystemTime,
 }
 
 impl Studio {
@@ -170,6 +175,7 @@ impl Studio {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let use_run_script = run_script_file.is_some();
+        let spawned_at = std::time::SystemTime::now();
 
         match target {
             PlaceTarget::PlaceId { place_id, universe_id } => {
@@ -212,6 +218,8 @@ impl Studio {
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
                     detached: opts.detached,
+                    log_marker: run_script_file.clone(),
+                    spawned_at,
                 })
             }
             PlaceTarget::File(ref path) => {
@@ -269,6 +277,8 @@ impl Studio {
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
                     detached: opts.detached,
+                    log_marker: run_script_file.clone().or(Some(place_str)),
+                    spawned_at,
                 })
             }
             PlaceTarget::Content(_) => {
@@ -303,6 +313,8 @@ impl Studio {
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
                     detached: opts.detached,
+                    log_marker: run_script_file.clone(),
+                    spawned_at,
                 })
             }
         }
@@ -491,9 +503,69 @@ impl Studio {
         }
     }
 
-    /// Terminate the Studio process.
+    /// Whether the process is still alive, without taking the handle mutex.
+    fn alive(&self) -> bool {
+        #[cfg(unix)]
+        {
+            unsafe { libc::kill(self.pid as i32, 0) == 0 }
+        }
+        #[cfg(not(unix))]
+        {
+            self.handle.try_lock().map_or(true, |mut handle| {
+                handle.as_mut().is_some_and(|h| h.try_wait().ok().map_or(true, |status| status.is_none()))
+            })
+        }
+    }
+
+    /// Wait until killing this Studio can't lose its sign-in (see
+    /// [`log::Credential`]), polling its log and Studio's cookie store: its
+    /// sign-in has ended, and any token it renewed is in the store on disk. A
+    /// kill before that signs the account out of every Studio. Gives up after
+    /// 20 s (a Studio stuck before it signs in). A launch with no log marker
+    /// can't be checked and is killed at once.
+    fn wait_for_sign_in_to_settle(&self) {
+        use super::log;
+        const MAX_WAIT: Duration = Duration::from_secs(20);
+        let (Some(dir), Some(marker)) = (crate::paths::roblox_logs_dir(), self.log_marker.as_deref()) else {
+            return;
+        };
+        let give_up = Instant::now() + MAX_WAIT;
+        let mut waiting = false;
+        while self.alive() {
+            let state = log::find_log(&dir, marker, self.spawned_at)
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|text| log::credential_state(&text));
+            let settled = match &state {
+                // No log yet, or no finished sign-in: Studio may be renewing the token.
+                None | Some(log::Credential::NotSignedIn | log::Credential::SigningIn) => false,
+                Some(log::Credential::Renewed { name, at }) => renewed_token_on_disk(name, *at),
+                Some(log::Credential::Settled) => true,
+            };
+            if settled {
+                if waiting {
+                    tracing::info!(pid = self.pid, "Studio's sign-in is saved; killing it");
+                }
+                return;
+            }
+            if Instant::now() >= give_up {
+                tracing::warn!(pid = self.pid, ?state, "killing Studio before its sign-in settled; the next Studio may come up signed out");
+                return;
+            }
+            if !waiting {
+                tracing::info!(pid = self.pid, ?state, "waiting for Studio to save its sign-in before killing it");
+                waiting = true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Terminate the Studio process, first letting its sign-in settle (see
+    /// [`Self::wait_for_sign_in_to_settle`]).
     /// Uses stored PID directly so it never blocks on the handle mutex.
     pub fn kill(&self) {
+        if self.alive() {
+            self.wait_for_sign_in_to_settle();
+        }
         // Reap StudioTestService child processes first. `ExecuteMultiplayerTestAsync`
         // spawns `-task StartServer`/`StartClient` Studios as children of this edit
         // Studio (they carry `editpid <our pid>` in argv). rodeo does NOT own those
@@ -649,6 +721,25 @@ fn reap_test_children(edit_pid: u32) {
             .args(["process", "where", filter.as_str(), "call", "terminate"])
             .output();
         let _ = edit_pid;
+    }
+}
+
+/// Where Studio's cookie store can't be read (Windows), how long after a token
+/// renewal to assume Studio wrote it to disk. Measured at 2.4 s on macOS.
+const UNVERIFIED_SAVE_WAIT: Duration = Duration::from_secs(5);
+
+/// Whether the token Studio renewed at `at`, stored as cookie record `name`,
+/// is in its cookie store on disk.
+fn renewed_token_on_disk(name: &str, at: std::time::SystemTime) -> bool {
+    use super::cookies;
+    match cookies::store_path() {
+        // The store keeps whole seconds, so this save's record is created no
+        // earlier than `at` rounded down; the previous one is minutes older.
+        Some(path) => std::fs::read(path)
+            .ok()
+            .and_then(|file| cookies::created_at(&file, name))
+            .is_some_and(|created| created + Duration::from_secs(1) > at),
+        None => std::time::SystemTime::now() >= at + UNVERIFIED_SAVE_WAIT,
     }
 }
 
