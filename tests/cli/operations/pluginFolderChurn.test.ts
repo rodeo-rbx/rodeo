@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-const ROOT = join(import.meta.dir, "..");
+const ROOT = join(import.meta.dir, "..", "..", "..");
 const RODEO = join(ROOT, "bin", "rodeo");
 const PORT_A = 47360; // the serve whose run must survive
 const PORT_B = 47370; // the serve whose start/stop is the perturbation
