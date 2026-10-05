@@ -1,5 +1,7 @@
 # build output
 dist/
+# versioned site build (versioning/build.mjs)
+.versions/
 # generated types
 .astro/
 

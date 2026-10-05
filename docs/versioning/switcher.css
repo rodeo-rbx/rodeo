@@ -1,0 +1,51 @@
+/* Docs version switcher and old-version banner, injected into every version's
+   pages by build.mjs. Uses the token values from src/styles/custom.css. */
+
+.rodeo-version {
+	flex-shrink: 0;
+	align-self: center;
+	margin-inline-start: 0.75rem;
+	appearance: none;
+	color-scheme: dark;
+	padding: 0.2rem 1.6rem 0.2rem 0.55rem;
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.375rem;
+	background: var(--sl-color-bg-nav)
+		url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23b8b8b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+		no-repeat right 0.45rem center / 0.75rem;
+	color: var(--sl-color-gray-2);
+	font: 700 var(--sl-text-xs) / 1.5 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+	cursor: pointer;
+	transition: border-color 120ms ease, color 120ms ease;
+}
+
+.rodeo-version:hover,
+.rodeo-version:focus-visible {
+	border-color: var(--sl-color-accent);
+	color: var(--sl-color-white);
+}
+
+.rodeo-version option {
+	background: var(--sl-color-bg-nav);
+	color: var(--sl-color-gray-1);
+}
+
+.rodeo-version-banner {
+	padding: 0.6rem var(--sl-nav-pad-x);
+	border-bottom: 1px solid var(--sl-color-accent);
+	background: var(--sl-color-accent-low);
+	color: var(--sl-color-gray-1);
+	font-size: var(--sl-text-sm);
+	line-height: var(--sl-line-height-headings);
+	text-align: center;
+	text-wrap: balance;
+}
+
+.rodeo-version-banner a {
+	color: var(--sl-color-accent-high);
+	font-weight: 600;
+}
+
+.rodeo-version-banner a:hover {
+	color: var(--sl-color-white);
+}

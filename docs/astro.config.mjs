@@ -4,7 +4,7 @@ import starlight from '@astrojs/starlight';
 
 // https://astro.build/config
 export default defineConfig({
-	site: 'https://revvy02.github.io',
+	site: 'https://rodeo-rbx.github.io',
 	base: '/rodeo/',
 	integrations: [
 		starlight({
@@ -18,7 +18,7 @@ export default defineConfig({
 				ThemeSelect: './src/components/EmptyThemeSelect.astro',
 			},
 			social: [
-				{ icon: 'github', label: 'GitHub', href: 'https://github.com/revvy02/rodeo' },
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/rodeo-rbx/rodeo' },
 			],
 			sidebar: [
 				{

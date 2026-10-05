@@ -10,6 +10,11 @@ on:
       - 'rodeo-cli/examples/docs-gen.rs'
       - 'rodeo-cli/Cargo.toml'
       - '.github/workflows/docs.yml'
+  # A stable release moves /rodeo/ to the new version's docs; see
+  # docs/versioning/build.mjs for the version layout.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -23,9 +28,15 @@ concurrency:
 
 jobs:
   build:
+    # Prerelease tags (any hyphen, matching release.yml) don't change the published versions.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && !contains(github.event.workflow_run.head_branch, '-'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # stable docs versions build from release tags
       - name: Init launch-control submodule
         # Only the cargo-workspace-member submodule is needed to compile the
         # CLI for docs-gen below. submodules/lute and submodules/lune are
@@ -59,7 +70,8 @@ jobs:
           git diff --exit-code -- docs/src/content/docs/cli.md \
             || (echo "::error::cli.md is stale. Run 'cargo run --example docs-gen > docs/src/content/docs/cli.md' and commit." && exit 1)
 
-      # `npm run build` triggers a prebuild hook that calls `lute run
+      # `npm run build` (which build:versions runs for main) triggers a
+      # prebuild hook that calls `lute run
       # docs/docgen.luau` to regenerate the Luau API + @rodeo runtime pages
       # from the source .luau files. mise installs lute (pinned in mise.toml)
       # along with the rest of the project's toolchain.
@@ -73,10 +85,12 @@ jobs:
           cache: "npm"
           cache-dependency-path: docs/package-lock.json
       - run: cd docs && npm ci
-      - run: cd docs && npm run build
+      # main builds to /rodeo/next/ (with the regeneration above), the newest
+      # stable tag to /rodeo/, and older stable minors to /rodeo/vX.Y/.
+      - run: cd docs && npm run build:versions
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/dist
+          path: docs/.versions/site
 
   deploy:
     needs: build

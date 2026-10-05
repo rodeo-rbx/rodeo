@@ -11,7 +11,9 @@
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro build",
+    "build:versions": "node versioning/build.mjs",
     "preview": "astro preview",
+    "preview:versions": "node versioning/serve.mjs",
     "astro": "astro"
   },
   "dependencies": {

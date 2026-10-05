@@ -26,7 +26,7 @@ rodeo serve
 rodeo run --place
 ```
 
-One plugin file per running serve means two serves never overwrite each other's plugin, so different rodeo versions can run side by side on one machine, each on its own port (see [Port](/getting-started/cli-usage/#port)). A serve that stops leaves its file in place while a `--detach` Studio still uses it; the next serve to start removes files whose serve is gone and that no Studio needs.
+One plugin file per running serve means two serves never overwrite each other's plugin, so different rodeo versions can run side by side on one machine, each on its own port (see [Port](/rodeo/getting-started/cli-usage/#port)). A serve that stops leaves its file in place while a `--detach` Studio still uses it; the next serve to start removes files whose serve is gone and that no Studio needs.
 
 Launched Studios connect only to the serve that launched them. A Studio you open manually connects to every running serve and appears in each one's `rodeo state`.
 
