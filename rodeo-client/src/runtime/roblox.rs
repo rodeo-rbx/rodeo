@@ -17,17 +17,7 @@ pub async fn roblox_export(state: SharedRpcState, req: &rt::RobloxExportRequest)
     let lower = path.to_lowercase();
     let is_xml = lower.ends_with(".rbxmx") || lower.ends_with(".rbxlx");
 
-    let bytes_to_write: Vec<u8> = if is_xml {
-        let dom = rbx_binary::from_reader(buffer.as_slice())
-            .map_err(|e| format!("rbx-binary decode: {e}"))?;
-        let root_refs: Vec<_> = dom.root().children().to_vec();
-        let mut out = Vec::new();
-        rbx_xml::to_writer_default(&mut out, &dom, &root_refs)
-            .map_err(|e| format!("rbx-xml encode: {e}"))?;
-        out
-    } else {
-        buffer
-    };
+    let bytes_to_write: Vec<u8> = if is_xml { binary_model_to_xml(&buffer)? } else { buffer };
 
     if let Some(parent) = std::path::Path::new(&path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -44,6 +34,24 @@ pub async fn roblox_export(state: SharedRpcState, req: &rt::RobloxExportRequest)
     })?;
 
     Ok(rt::Ok::default())
+}
+
+/// Re-serialize the binary model `SerializeInstancesAsync` produced as XML.
+///
+/// `WriteUnknown`, not rbx_xml's default `IgnoreUnknown`: the default drops
+/// every property its bundled reflection database doesn't list, and Studio
+/// ships serialized properties ahead of that database (#36: Texture's
+/// Emissive* properties vanished from `.rbxmx` exports while `.rbxm` kept
+/// them). Every property in these bytes is one Studio chose to serialize,
+/// and rbx_binary keeps an unknown one under its serialized name and type,
+/// so writing it through as-is is what Studio's own XML would contain.
+fn binary_model_to_xml(binary: &[u8]) -> Result<Vec<u8>, String> {
+    let dom = rbx_binary::from_reader(binary).map_err(|e| format!("rbx-binary decode: {e}"))?;
+    let root_refs: Vec<_> = dom.root().children().to_vec();
+    let options = rbx_xml::EncodeOptions::new().property_behavior(rbx_xml::EncodePropertyBehavior::WriteUnknown);
+    let mut out = Vec::new();
+    rbx_xml::to_writer(&mut out, &dom, &root_refs, options).map_err(|e| format!("rbx-xml encode: {e}"))?;
+    Ok(out)
 }
 
 /// Finalize a capture: `rgba` is the `source_width` x `source_height` RGBA8
@@ -747,5 +755,82 @@ mod capture_collect_tests {
         finalize_pixels(rgba, 4, 2, 4, 2, false, out.to_str().unwrap()).expect("one lit pixel is a frame");
         assert!(out.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod xml_export_tests {
+    use super::*;
+    use rbx_dom_weak::types::{Color3, Content, Variant};
+    use rbx_dom_weak::{InstanceBuilder, WeakDom};
+
+    /// The binary model `SerializeInstancesAsync` would hand the export for
+    /// `instance`.
+    fn binary_model(instance: InstanceBuilder) -> Vec<u8> {
+        let mut dom = WeakDom::new(InstanceBuilder::new("DataModel"));
+        let id = dom.insert(dom.root_ref(), instance);
+        let mut out = Vec::new();
+        rbx_binary::to_writer(&mut out, &dom, &[id]).expect("encode binary");
+        out
+    }
+
+    /// Convert as `roblox_export` does, then read the XML back the way Studio
+    /// would: every property in the file, known to rbx_xml or not.
+    fn export_as_xml(instance: InstanceBuilder) -> (String, WeakDom) {
+        let xml = binary_model_to_xml(&binary_model(instance)).expect("convert to XML");
+        let options = rbx_xml::DecodeOptions::new().property_behavior(rbx_xml::DecodePropertyBehavior::ReadUnknown);
+        let dom = rbx_xml::from_reader(xml.as_slice(), options).expect("decode XML");
+        (String::from_utf8(xml).expect("XML is UTF-8"), dom)
+    }
+
+    fn emissive_texture() -> InstanceBuilder {
+        InstanceBuilder::new("Texture")
+            .with_property("EmissiveMaskContent", Content::from_uri("rbxassetid://1"))
+            .with_property("EmissiveStrength", 4.0f32)
+            .with_property("EmissiveTint", Color3::new(1.0, 0.490_196_08, 0.156_862_75))
+            .with_property("StudsPerTileU", 3.0f32)
+    }
+
+    #[test]
+    fn texture_emissive_properties_survive_xml_export() {
+        let (xml, dom) = export_as_xml(emissive_texture());
+        for name in ["EmissiveMaskContent", "EmissiveStrength", "EmissiveTint"] {
+            assert!(xml.contains(&format!("name=\"{name}\"")), "{name} missing from:\n{xml}");
+        }
+
+        let texture = dom.get_by_ref(dom.root().children()[0]).expect("texture");
+        assert_eq!(texture.class, "Texture");
+        let property = |name: &str| texture.properties.get(&name.into()).unwrap_or_else(|| panic!("{name} not read back"));
+        assert_eq!(property("EmissiveMaskContent"), &Variant::Content(Content::from_uri("rbxassetid://1")));
+        assert_eq!(property("EmissiveStrength"), &Variant::Float32(4.0));
+        assert_eq!(property("EmissiveTint"), &Variant::Color3(Color3::new(1.0, 0.490_196_08, 0.156_862_75)));
+        assert_eq!(property("StudsPerTileU"), &Variant::Float32(3.0));
+    }
+
+    #[test]
+    fn bundled_reflection_database_knows_texture_emissive_properties() {
+        // Pins the rbx_xml >= 3.0.1 floor (database 741): with an older
+        // database these are only written because of WriteUnknown, as raw
+        // names with no type conversion.
+        let mut dom = WeakDom::new(InstanceBuilder::new("DataModel"));
+        let id = dom.insert(dom.root_ref(), emissive_texture());
+        let options = rbx_xml::EncodeOptions::new().property_behavior(rbx_xml::EncodePropertyBehavior::ErrorOnUnknown);
+        rbx_xml::to_writer(&mut Vec::new(), &dom, &[id], options).expect("every Texture property known");
+    }
+
+    #[test]
+    fn properties_newer_than_the_reflection_database_are_written_through() {
+        let part = InstanceBuilder::new("Part")
+            .with_property("RodeoFutureNumber", 2.5f32)
+            .with_property("RodeoFutureContent", Content::from_uri("rbxassetid://3"));
+        let (xml, dom) = export_as_xml(part);
+        assert!(xml.contains("<float name=\"RodeoFutureNumber\">2.5</float>"), "{xml}");
+
+        let part = dom.get_by_ref(dom.root().children()[0]).expect("part");
+        assert_eq!(part.properties.get(&"RodeoFutureNumber".into()), Some(&Variant::Float32(2.5)));
+        assert_eq!(
+            part.properties.get(&"RodeoFutureContent".into()),
+            Some(&Variant::Content(Content::from_uri("rbxassetid://3")))
+        );
     }
 }
