@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { cliStudioHandle, runRodeo } from "../helpers.js";
+import { cliStudioHandle, killLaunchedStudios, launchedSessions, runRodeo } from "../helpers.js";
 
 const PORT = 46220;
 
@@ -110,5 +110,77 @@ describe("directives (CLI)", () => {
     } finally {
       rmIfExists(script);
     }
+  });
+});
+
+// Issue #28: a script whose directive launches a place could not be re-run
+// against an already-open Studio. `--studio-id` conflicted with the
+// directive's `--place`, and `--dom-id` launched a second Studio, ran in the
+// pinned DOM instead, then closed the launch.
+describe("a CLI pin overrides a directive's --place", () => {
+  const PIN_PORT = 47520;
+  // Studios this suite launches are reaped by session, never by pattern.
+  const STARTED = Date.now();
+  const cli = cliStudioHandle(PIN_PORT);
+  beforeAll(async () => {
+    await cli.spawn();
+    // Mark the open Studio so a run can prove it executed there.
+    const mark = runRodeo([
+      "run", "--port", String(PIN_PORT), "--studio-id", cli.studio().studioId,
+      "--source", `workspace:SetAttribute("rodeoIssue28", "open Studio")`,
+    ]);
+    expect(mark.ok, mark.stderr).toBe(true);
+  });
+  afterAll(async () => {
+    await cli.close();
+    killLaunchedStudios(PIN_PORT, STARTED);
+  });
+
+  // The directive's --save belongs to its launch: it must not save the
+  // Studio the user pins the script to.
+  const saveOut = mkTmp(".rbxl");
+  const script = () => writeScript(
+    `-- @rodeo run --place --save ${saveOut} --show-return`,
+    `return workspace:GetAttribute("rodeoIssue28")`,
+  );
+
+  it("--studio-id runs the script in the open Studio without launching", () => {
+    const path = script();
+    const since = Date.now();
+    try {
+      const r = runRodeo(["run", "--port", String(PIN_PORT), path, "--studio-id", cli.studio().studioId]);
+      expect(r.ok, r.stderr).toBe(true);
+      expect(r.stdout).toContain("open Studio");
+      expect(launchedSessions(PIN_PORT, since)).toEqual([]);
+      expect(existsSync(saveOut)).toBe(false);
+    } finally {
+      rmIfExists(path);
+      rmIfExists(saveOut);
+    }
+  });
+
+  it("--dom-id runs the script in the pinned DOM without launching", () => {
+    const path = script();
+    const since = Date.now();
+    try {
+      const r = runRodeo(["run", "--port", String(PIN_PORT), path, "--dom-id", cli.studio().editDomId!]);
+      expect(r.ok, r.stderr).toBe(true);
+      expect(r.stdout).toContain("open Studio");
+      expect(launchedSessions(PIN_PORT, since)).toEqual([]);
+      expect(existsSync(saveOut)).toBe(false);
+    } finally {
+      rmIfExists(path);
+      rmIfExists(saveOut);
+    }
+  });
+
+  it("--dom-id and --place typed together are rejected", () => {
+    const since = Date.now();
+    const r = runRodeo([
+      "run", "--port", String(PIN_PORT), "--dom-id", cli.studio().editDomId!, "--place", "--source", "return 1",
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.stderr).toContain("cannot be used with");
+    expect(launchedSessions(PIN_PORT, since)).toEqual([]);
   });
 });

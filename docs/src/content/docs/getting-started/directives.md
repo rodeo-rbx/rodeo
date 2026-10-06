@@ -49,6 +49,13 @@ rodeo run my-script.luau --mode run --context server
 
 This lets the directive set sensible defaults while leaving room for one-off overrides.
 
+A `--studio-id` or `--dom-id` at the call site also overrides the directive's `--place`, along with the directive's `--save`, which saves the Studio that `--place` launches. A `--place` at the call site overrides the directive's `--studio-id` or `--dom-id`. To run a script whose directive launches a place in a Studio that is already open:
+
+```bash
+rodeo run my-script.luau --studio-id 6db9a5e3
+# runs in that Studio; the directive's --place and --save are ignored, its other flags still apply.
+```
+
 ## Short names
 
 Scripts in `.rodeo/` can be invoked by bare name:

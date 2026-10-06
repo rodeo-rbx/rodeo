@@ -295,7 +295,9 @@ pub struct PlaceArgs {
 
     /// Pin the run to a specific DOM by id (from `rodeo state`; unique prefix
     /// ok). Only --context may accompany it — no mode/dom routing.
-    #[arg(long = "dom-id", help_heading = "Targeting")]
+    // Conflicts with --place like --studio-id: the run executes in the pinned
+    // DOM, so a --place launch would open a Studio only to close it unused.
+    #[arg(long = "dom-id", help_heading = "Targeting", conflicts_with = "place")]
     pub dom_id: Option<String>,
 
     /// Universe ID (resolved from place ID if omitted)
