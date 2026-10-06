@@ -54,6 +54,7 @@ export type ExecutionContext = {
 	resultsEvent: BindableEvent,
 	incomingEvent: BindableEvent,
 	outgoingEvent: BindableEvent,
+	paramsFunction: BindableFunction,
 	cleanup: () -> (),
 }
 
@@ -79,7 +80,13 @@ local function createExecutionContext(source: string, context: RunContext, execu
 		local resolved = resolveInstancePath(instancePath)
 		if resolved and resolved:IsA("ModuleScript") then
 			originalInstance = resolved
-			module = originalInstance:Clone()
+			-- Clone returns nil for an instance with Archivable off. Fail
+			-- before the rename below, which nothing would undo.
+			local clone = originalInstance:Clone()
+			if not clone then
+				error(`can't run {instancePath}: its Archivable is off, and the run executes a clone of it`, 0)
+			end
+			module = clone
 
 			-- Rename original so clone takes precedence in require resolution
 			originalInstance.Name = originalInstance.Name .. makeIgnoreSuffix(executionId)
@@ -112,6 +119,12 @@ local function createExecutionContext(source: string, context: RunContext, execu
 	local outgoingEvent = Instance.new("BindableEvent")
 	outgoingEvent.Name = "outgoing"
 	outgoingEvent.Parent = runner
+
+	-- The runner invokes this once at startup for its run parameters (see
+	-- runtime.executeInContext for why they don't travel as attributes).
+	local paramsFunction = Instance.new("BindableFunction")
+	paramsFunction.Name = "params"
+	paramsFunction.Parent = runner
 
 	-- Clone and nil-parent each dependency module with @rodeo/ names for clean stack traces
 	local sharedRoot = script.Parent.Parent.Parent.shared
@@ -220,6 +233,7 @@ local function createExecutionContext(source: string, context: RunContext, execu
 		resultsEvent = resultsEvent,
 		incomingEvent = incomingEvent,
 		outgoingEvent = outgoingEvent,
+		paramsFunction = paramsFunction,
 		cleanup = cleanup,
 	}
 end

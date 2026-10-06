@@ -66,6 +66,36 @@ return function(roblox, rpc, fs, stream, runtime, meshToBlob, meshFromBlob, moti
 		end
 		return result
 	end
+	-- With Workspace.NextGenerationReplication on, a game server rejects
+	-- string attributes over 50 characters (issue #32). Material names come
+	-- from the source file and can be longer, so one is stored in pieces of at
+	-- most 50 bytes that end on UTF-8 character boundaries: `name` holds the
+	-- first, then `name2`, `name3`, ... Joint keys (a GUID and an index) fit.
+	local ATTRIBUTE_STRING_LIMIT = 50
+	local function setLongStringAttribute(instance, name, value)
+		local piece, start = 1, 1
+		repeat
+			local stop = math.min(start + ATTRIBUTE_STRING_LIMIT, #value + 1)
+			while stop <= #value and stop > start + 1 and bit32.band(string.byte(value, stop), 0xC0) == 0x80 do
+				stop -= 1
+			end
+			instance:SetAttribute(if piece == 1 then name else `{name}{piece}`, string.sub(value, start, stop - 1))
+			piece, start = piece + 1, stop
+		until start > #value
+	end
+	local function getLongStringAttribute(instance, name)
+		local value = instance:GetAttribute(name)
+		local piece = 2
+		while value ~= nil do
+			local rest = instance:GetAttribute(`{name}{piece}`)
+			if rest == nil then
+				break
+			end
+			value ..= rest
+			piece += 1
+		end
+		return value
+	end
 	local nextId = 0
 	local function cframe(values)
 		return CFrame.new(unpack(values))
@@ -244,7 +274,7 @@ return function(roblox, rpc, fs, stream, runtime, meshToBlob, meshFromBlob, moti
 						owner:SetAttribute("RodeoSceneEmissive", Color3.new(unpack(material.emissive)))
 						owner:SetAttribute("RodeoSceneEmissiveStrength", material.emissiveStrength)
 						owner:SetAttribute("RodeoSceneTransmission", material.transmission)
-						owner:SetAttribute("RodeoSceneMaterialName", material.name)
+						setLongStringAttribute(owner, "RodeoSceneMaterialName", material.name)
 						owner:SetAttribute("RodeoSceneRoughness", material.roughness)
 						owner:SetAttribute("RodeoSceneMetalness", material.metalness)
 						owner:SetAttribute("RodeoSceneMaterial", part.Material.Name)
@@ -433,7 +463,9 @@ return function(roblox, rpc, fs, stream, runtime, meshToBlob, meshFromBlob, moti
 			local appearance = part:FindFirstChildOfClass("SurfaceAppearance")
 			local color = if appearance then appearance.Color else part.Color
 			local material = {
-				name = if appearance then appearance.Name else part:GetAttribute("RodeoSceneMaterialName") or part.Name,
+				name = if appearance
+					then appearance.Name
+					else getLongStringAttribute(part, "RodeoSceneMaterialName") or part.Name,
 				color = { color.R, color.G, color.B, 1 - part.Transparency },
 				doubleSided = part:IsA("MeshPart") and part.DoubleSided,
 				alphaMode = if part.Transparency == 0 then "OPAQUE" else "BLEND",
@@ -501,7 +533,9 @@ return function(roblox, rpc, fs, stream, runtime, meshToBlob, meshFromBlob, moti
 				tostring(material.roughness),
 				tostring(material.metalness),
 				tostring(material.nativeMaterial),
-				tostring(if appearance then appearance.Name else part:GetAttribute("RodeoSceneMaterialName")),
+				tostring(
+					if appearance then appearance.Name else getLongStringAttribute(part, "RodeoSceneMaterialName")
+				),
 			}
 			for _, channel in { "color", "normal", "roughness", "metalness" } do
 				table.insert(keyParts, tostring(maps[channel]))

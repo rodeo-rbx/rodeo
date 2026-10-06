@@ -47,6 +47,42 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 	-- order. Keyed by executionId; executed once the last chunk lands.
 	local pendingRuns: { [string]: { run: any, parts: { string } } } = {}
 
+	-- Still executing while any run remains.
+	local function updateExecuting()
+		if next(activeProcesses) == nil then
+			setIsExecuting(false)
+		end
+	end
+
+	-- End a run that failed to start. Without an ExecutionDone the run client
+	-- waits forever (issue #32), and ExecutionDone.error alone reaches no user,
+	-- since no client prints it, so the reason also goes to the run's stderr
+	-- the way the plugin's logger writes there.
+	local function failRun(executionId: string, err: any)
+		local message = tostring(err)
+		pcall(function()
+			local write = runtimeProto.StreamWriteRequest.new({
+				handle = "stderr",
+				data = `\27[31m[rodeo] run failed to start: {message}\27[0m\n`,
+			})
+			local call = runtimeProto.ClientRpcCall.jsonDecode({
+				id = "",
+				executionId = executionId,
+				streamWrite = write:jsonEncode(),
+			})
+			local rpcMsg = rodeoProto.PluginMessage.new({ msg = { type = "rpc", value = call } })
+			client:Send(HttpService:JSONEncode(rpcMsg:jsonEncode()))
+		end)
+		local done = rodeoProto.ExecutionDone.new({
+			executionId = executionId,
+			success = false,
+			error = message,
+		})
+		local msg = rodeoProto.PluginMessage.new({ msg = { type = "done", value = done } })
+		client:Send(HttpService:JSONEncode(msg:jsonEncode()))
+		updateExecuting()
+	end
+
 	-- Start a run whose full script is assembled. Everything after script
 	-- transport is unchanged from the pre-chunking single-message path.
 	local function executeRun(run)
@@ -64,15 +100,14 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 		local scriptArgs = run.scriptArgs or {}
 		local executionId = run.executionId
 
-		local ctx = utils.createExecutionContext(
-			run.script,
-			context,
-			executionId,
-			run.instancePath,
-			run.scriptPath
-		)
+		local created, ctx =
+			pcall(utils.createExecutionContext, run.script, context, executionId, run.instancePath, run.scriptPath)
+		if not created then
+			failRun(executionId, ctx)
+			return
+		end
 
-		local killFn = runtime.executeInContext(ctx, context, {
+		local started, killFn = pcall(runtime.executeInContext, ctx, context, {
 			executionId = executionId,
 			logFilter = logFilter,
 			reloadRequires = run.reloadRequires,
@@ -99,15 +134,7 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 				activeProcesses[executionId] = nil
 				processEntries[executionId] = nil
 				setActiveProcesses(table.clone(processEntries))
-				-- Update executing state: still executing if any processes remain
-				local hasActive = false
-				for _ in pairs(activeProcesses) do
-					hasActive = true
-					break
-				end
-				if not hasActive then
-					setIsExecuting(false)
-				end
+				updateExecuting()
 			end,
 			onRpc = function(msg)
 				-- msg.callJson is canonical ClientRpcCall JSON minus executionId.
@@ -173,6 +200,12 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 				end
 			end,
 		})
+		if not started then
+			-- An instance-path run renamed its original module; put it back.
+			pcall(ctx.cleanup)
+			failRun(executionId, killFn)
+			return
+		end
 
 		activeProcesses[executionId] = { ctx = ctx, kill = killFn }
 		processEntries[executionId] = {
@@ -261,14 +294,7 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 			activeProcesses[kill.executionId] = nil
 			processEntries[kill.executionId] = nil
 			setActiveProcesses(table.clone(processEntries))
-			local hasActive = false
-			for _ in pairs(activeProcesses) do
-				hasActive = true
-				break
-			end
-			if not hasActive then
-				setIsExecuting(false)
-			end
+			updateExecuting()
 		elseif serverMsg.msg and serverMsg.msg.type == "rpcResponse" then
 			local rpcResp = serverMsg.msg.value  -- ClientRpcResponse
 			-- Forward typed response to the runner. rpcResp.res is the tagged oneof variant:

@@ -56,8 +56,26 @@ local function executeInContext(ctx: utils.ExecutionContext, context: RunContext
 	end)
 	local log = createLogger(rpc, if params.verbose then "debug" else "info")
 
-	-- Pass log level to runner via attribute so it can create its own logger
-	ctx.runner:SetAttribute("logLevel", if params.verbose then "debug" else "info")
+	-- Run parameters reach the runner through its `params` BindableFunction,
+	-- not attributes: with Workspace.NextGenerationReplication on, a game
+	-- server rejects string attributes over 50 characters (issue #32), which
+	-- the log filter's JSON alone exceeds, as can any path or script argument.
+	-- The runner may run in another Luau VM (a play DOM's game VM for server
+	-- and client runs); the table crosses as a copy.
+	local runParams = {
+		executionId = params.executionId,
+		scriptArgs = params.scriptArgs or {},
+		returnFile = params.returnFile or "",
+		showReturn = params.showReturn or false,
+		outputFile = params.outputFile or "",
+		logFilter = params.logFilter or {},
+		context = context,
+		pluginBuild = constants.BUILD_ID,
+		pluginKey = constants.PLUGIN_KEY,
+	}
+	ctx.paramsFunction.OnInvoke = function()
+		return runParams
+	end
 
 	log.debug(`START`)
 	log.debug(`ctx.module: {ctx.module:GetFullName()}`)
@@ -90,22 +108,13 @@ local function executeInContext(ctx: utils.ExecutionContext, context: RunContext
 		end
 	end
 
-	-- Pass execution params to runner via attributes
-	local HttpService = game:GetService("HttpService")
-	ctx.runner:SetAttribute("executionId", params.executionId)
-	ctx.runner:SetAttribute("scriptArgs", HttpService:JSONEncode(params.scriptArgs or {}))
-	ctx.runner:SetAttribute("returnFile", params.returnFile or "")
-	ctx.runner:SetAttribute("showReturn", params.showReturn or false)
-	ctx.runner:SetAttribute("outputFile", params.outputFile or "")
-	ctx.runner:SetAttribute("logFilter", HttpService:JSONEncode(params.logFilter or {}))
-	ctx.runner:SetAttribute("context", context)
-	ctx.runner:SetAttribute("pluginBuild", constants.BUILD_ID)
-	ctx.runner:SetAttribute("pluginKey", constants.PLUGIN_KEY)
 	-- The inlined @rodeo/* shims find their plugin's namespace and their run
 	-- through these two attributes on the module they live in (`script`). Both
 	-- have to come from the module: every plugin in a DOM shares one _G, and
 	-- one plugin runs several runs at once, so a shared "current run" slot
-	-- would be overwritten between a run's start and a late require.
+	-- would be overwritten between a run's start and a late require. Both
+	-- values stay well under NextGenerationReplication's 50-character limit
+	-- for string attributes (a 12-hex run id; `<build>-<port>`).
 	if ctx.module then
 		ctx.module:SetAttribute("rodeoPlugin", constants.PLUGIN_KEY)
 		ctx.module:SetAttribute("rodeoExecutionId", params.executionId)

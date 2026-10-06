@@ -13,13 +13,14 @@ end
 
 local module = ref("module")
 
--- Get execution params from attributes
-local executionId = script:GetAttribute("executionId") or ""
-local scriptArgs = HttpService:JSONDecode(script:GetAttribute("scriptArgs") or "[]")
-local returnFile = script:GetAttribute("returnFile") or ""
-local showReturn = script:GetAttribute("showReturn") or false
-local outputFile = script:GetAttribute("outputFile") or ""
-local logFilter = HttpService:JSONDecode(script:GetAttribute("logFilter") or "{}")
+-- Run parameters, from the plugin (runtime.executeInContext)
+local params = script.params:Invoke()
+local executionId: string = params.executionId
+local scriptArgs: { string } = params.scriptArgs
+local returnFile: string = params.returnFile
+local showReturn: boolean = params.showReturn
+local outputFile: string = params.outputFile
+local logFilter = params.logFilter
 
 -- Wire up RPC using shared transport-agnostic module + BindableEvent transport
 local createRpc = require(ref("rpc"))
@@ -44,7 +45,7 @@ local runtime = require(ref("runtimeProto"))
 -- bootstrap's bridge hands back). Never a "current run": one plugin runs
 -- several runs at once, so per-run identity comes from the attributes the
 -- runtime stamps on each run's module.
-local pluginKey = script:GetAttribute("pluginKey") or ""
+local pluginKey: string = params.pluginKey
 _G.__rodeo_plugins = _G.__rodeo_plugins or {}
 local ns = _G.__rodeo_plugins[pluginKey]
 if not ns then
@@ -98,7 +99,7 @@ local setupLogging = require(ref("logging"))
 local logConnection, outputFileStream = setupLogging(LogService, apis.fs, apis.stream, apis.io, logFilter, outputFile)
 
 -- Execute user module
-local context = script:GetAttribute("context") or "plugin"
+local context: string = params.context
 
 local success, result = xpcall(function()
 	if context == "elevated" then
@@ -173,7 +174,7 @@ local success, result = xpcall(function()
 		-- backend's plugin is active here, so this holds unless a stale plugin
 		-- file of another build is dialing this port.
 		local bridgeBuild = bridge:GetAttribute("rodeoBuild")
-		local pluginBuild = script:GetAttribute("pluginBuild")
+		local pluginBuild = params.pluginBuild
 		if bridgeBuild ~= nil and pluginBuild ~= nil and bridgeBuild ~= pluginBuild then
 			error(
 				`cmdbar bridge belongs to rodeo build {bridgeBuild}, this plugin is {pluginBuild}: `
