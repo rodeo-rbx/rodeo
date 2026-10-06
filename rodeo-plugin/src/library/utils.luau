@@ -120,6 +120,13 @@ local function createExecutionContext(source: string, context: RunContext, execu
 	local function cloneDep(template: ModuleScript, name: string): ModuleScript
 		local m = template:Clone()
 		m.Name = name
+		-- Studio reuses compiled code for identical source, together with the
+		-- chunk name it was first compiled under. Every same-build rodeo plugin
+		-- in this Studio carries these modules, so their errors would name
+		-- whichever plugin's file compiled them first. A trailing comment
+		-- unique to this plugin keeps the clones apart, so errors read
+		-- `@rodeo/<name>:<line>`; it adds no lines before the code.
+		m.Source = template.Source .. "\n-- " .. constants.PLUGIN_KEY
 		table.insert(depModules, m)
 		return m
 	end
