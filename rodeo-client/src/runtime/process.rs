@@ -54,8 +54,38 @@ fn build_command(program: &str, args: &[String], opts: Option<&rt::ProcessOption
         if let Some(cwd) = &o.cwd {
             cmd.current_dir(cwd);
         }
+        cmd.envs(&o.env);
     }
     cmd
+}
+
+/// Run `cmd` to completion with stdout and stderr captured. With `input`, the
+/// child's stdin gets those bytes and is then closed; without, stdin is null,
+/// so a child that reads it sees end-of-file at once.
+async fn output_with_input(mut cmd: tokio::process::Command, input: Option<&[u8]>) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let Some(input) = input else {
+        return cmd.output().await;
+    };
+    cmd.stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let input = input.to_vec();
+    // Write while the output is read: a child that answers as it reads (cat)
+    // would otherwise fill its stdout pipe and stall both sides.
+    let write = async move {
+        let written = stdin.write_all(&input).await;
+        drop(stdin);
+        written
+    };
+    let (written, output) = tokio::join!(write, child.wait_with_output());
+    match written {
+        // A child may exit without reading all of its input.
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e),
+        _ => output,
+    }
 }
 
 pub async fn process_run(req: &rt::ProcessRunRequest) -> Result<rt::ProcessRunResponse, String> {
@@ -64,10 +94,11 @@ pub async fn process_run(req: &rt::ProcessRunRequest) -> Result<rt::ProcessRunRe
     }
     let program = &req.args[0];
     let program_args = &req.args[1..];
-    let mut cmd = build_command(program, program_args, req.options.as_option());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let output = cmd.output().await.map_err(|e| format!("run error: {e}"))?;
+    let options = req.options.as_option();
+    let cmd = build_command(program, program_args, options);
+    let output = output_with_input(cmd, options.and_then(|o| o.input.as_deref()))
+        .await
+        .map_err(|e| format!("run error: {e}"))?;
     Ok(format_process_output(&output))
 }
 
@@ -75,16 +106,20 @@ pub async fn process_system(req: &rt::ProcessSystemRequest) -> Result<rt::Proces
     // Shell out via the platform's shell: `sh -c` on Unix, `cmd /C` on Windows
     // (there is no `sh` on a stock Windows install).
     let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
-    let mut cmd = build_command(shell, &[flag.to_string(), req.command.clone()], req.options.as_option());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let output = cmd.output().await.map_err(|e| format!("system error: {e}"))?;
+    let options = req.options.as_option();
+    let cmd = build_command(shell, &[flag.to_string(), req.command.clone()], options);
+    let output = output_with_input(cmd, options.and_then(|o| o.input.as_deref()))
+        .await
+        .map_err(|e| format!("system error: {e}"))?;
     Ok(format_process_output(&output))
 }
 
 pub async fn process_create(state: SharedRpcState, req: &rt::ProcessCreateRequest) -> Result<rt::ProcessCreateResponse, String> {
     if req.args.is_empty() {
         return Err("empty args".to_string());
+    }
+    if req.options.as_option().is_some_and(|o| o.input.is_some()) {
+        return Err("input is for run and system; write to the handle's stdin stream instead".to_string());
     }
     let program = &req.args[0];
     let program_args = &req.args[1..];

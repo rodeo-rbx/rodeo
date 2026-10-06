@@ -13,6 +13,15 @@ local function applyRunDefaults(resp: runtime.ProcessRunResponse): runtime.Proce
 	}
 end
 
+-- `input` may be given as a string; on the wire it is bytes.
+local function wireOptions(options: any?): any?
+	if options and type(options.input) == "string" then
+		options = table.clone(options)
+		options.input = buffer.fromstring(options.input)
+	end
+	return options
+end
+
 return function(rpc, scriptArgs, hostInfo, runtime)
 	runtime = runtime or _G.__rodeo_runtime_proto -- standalone hosts (rodeo-shared/run.luau)
 
@@ -61,7 +70,7 @@ return function(rpc, scriptArgs, hostInfo, runtime)
 		else
 			resp = rpc.call("process_run", runtime.ProcessRunRequest.new({
 				args = argsOrHandle,
-				options = options,
+				options = wireOptions(options),
 			}))
 		end
 		return applyRunDefaults(resp)
@@ -70,7 +79,7 @@ return function(rpc, scriptArgs, hostInfo, runtime)
 	function process.system(command: string, options: any?)
 		local resp: runtime.ProcessRunResponse = rpc.call("process_system", runtime.ProcessSystemRequest.new({
 			command = command,
-			options = options,
+			options = wireOptions(options),
 		}))
 		return applyRunDefaults(resp)
 	end
@@ -78,7 +87,7 @@ return function(rpc, scriptArgs, hostInfo, runtime)
 	function process.create(args: { string }, options: any?)
 		local result: runtime.ProcessCreateResponse = rpc.call("process_create", runtime.ProcessCreateRequest.new({
 			args = args,
-			options = options,
+			options = wireOptions(options),
 		}))
 		local handle: any = { __rodeo_pid = result.pid }
 		if result.stdinHandle then

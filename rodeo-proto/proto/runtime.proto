@@ -283,6 +283,8 @@ message FsCopyRequest {
 message ProcessOptions {
   optional string cwd = 1;
   optional string stdio = 2;  // "piped" | absent (inherited)
+  map<string, string> env = 3;  // added to the inherited environment
+  optional bytes input = 4;  // run/system: written to the child's stdin, which is then closed
 }
 
 message ProcessGetInfoRequest {}

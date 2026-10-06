@@ -293,6 +293,7 @@ process.exit(code)
 -- Blocking execution; ProcessResult is { ok, exitcode, out, err }
 process.run(args, options?) -> ProcessResult
 process.system(command, options?) -> ProcessResult
+-- options: cwd, env (added to the inherited environment), input (string|buffer written to stdin)
 
 -- Async execution with stdio piping
 process.create(args, options?) -> ProcessHandle
@@ -526,7 +527,7 @@ the I/O:
 
 ```lua
 require("@lune/fs")       -- readFile/writeFile/isFile/isDir/readDir/remove*/writeDir/copy/move/metadata
-require("@lune/process")  -- args, env, cwd, exit, os
+require("@lune/process")  -- args, env, cwd, exit, os, exec (no create)
 require("@lune/serde")    -- encode/decode
 require("@lune/stdio")    -- write/ewrite
 require("@lune/task")     -- Roblox task, wait/delay clamped to lune's out-of-range handling

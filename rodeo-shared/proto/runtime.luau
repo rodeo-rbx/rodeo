@@ -52,6 +52,7 @@ type _Messages = {
 	FsRmdirRequest: _FsRmdirRequestMessage,
 	FsCopyRequest: _FsCopyRequestMessage,
 	ProcessOptions: _ProcessOptionsMessage,
+	ProcessOptions_EnvEntry: _ProcessOptions_EnvEntryMessage,
 	ProcessGetInfoRequest: _ProcessGetInfoRequestMessage,
 	ProcessGetInfoResponse: _ProcessGetInfoResponseMessage,
 	ProcessGetInfoResponse_EnvEntry: _ProcessGetInfoResponse_EnvEntryMessage,
@@ -1170,15 +1171,45 @@ type _ProcessOptionsImpl = {
 type _ProcessOptionsFields = {
 	cwd: string?,
 	stdio: string?,
+	env: { [string]: string? },
+	input: buffer?,
 }
 
 export type _ProcessOptionsPartialFields = {
 	cwd: string?,
 	stdio: string?,
+	env: { [string]: string }?,
+	input: buffer?,
 }
 
 export type ProcessOptions = typeof(setmetatable({} :: _ProcessOptionsFields, {} :: _ProcessOptionsImpl))
 type _ProcessOptionsMessage = proto.Message<ProcessOptions, _ProcessOptionsPartialFields>
+
+type _ProcessOptions_EnvEntryImpl = {
+	__index: _ProcessOptions_EnvEntryImpl,
+	new: (fields: _ProcessOptions_EnvEntryPartialFields?) -> ProcessOptions_EnvEntry,
+	encode: (self: ProcessOptions_EnvEntry) -> buffer,
+	decode: (input: buffer) -> ProcessOptions_EnvEntry,
+	jsonEncode: (self: ProcessOptions_EnvEntry) -> { [string]: any },
+	jsonDecode: (input: { [string]: any }) -> ProcessOptions_EnvEntry,
+	descriptor: proto.Descriptor,
+}
+
+type _ProcessOptions_EnvEntryFields = {
+	key: string,
+	value: string,
+}
+
+export type _ProcessOptions_EnvEntryPartialFields = {
+	key: string?,
+	value: string?,
+}
+
+export type ProcessOptions_EnvEntry = typeof(setmetatable(
+	{} :: _ProcessOptions_EnvEntryFields,
+	{} :: _ProcessOptions_EnvEntryImpl
+))
+type _ProcessOptions_EnvEntryMessage = proto.Message<ProcessOptions_EnvEntry, _ProcessOptions_EnvEntryPartialFields>
 
 type _ProcessGetInfoRequestImpl = {
 	__index: _ProcessGetInfoRequestImpl,
@@ -6709,6 +6740,8 @@ do
 		return setmetatable({
 			cwd = if data == nil or data.cwd == nil then nil else data.cwd,
 			stdio = if data == nil or data.stdio == nil then nil else data.stdio,
+			env = if data == nil or data.env == nil then {} else data.env,
+			input = if data == nil or data.input == nil then nil else data.input,
 		}, _ProcessOptionsImpl :: _ProcessOptionsImpl)
 	end
 
@@ -6724,6 +6757,25 @@ do
 		if self.stdio ~= nil then
 			output, cursor = proto.writeTag(output, cursor, 2, proto.wireTypes.lengthDelimited)
 			output, cursor = proto.writeString(output, cursor, self.stdio)
+		end
+
+		if self.env ~= nil and next(self.env) ~= nil then
+			for key, value in self.env do
+				assert(value ~= nil, "Luau")
+				local mapBuffer = buffer.create(0)
+				local mapCursor = 0
+				mapBuffer, mapCursor = proto.writeTag(mapBuffer, mapCursor, 1, proto.wireTypes.lengthDelimited)
+				mapBuffer, mapCursor = proto.writeString(mapBuffer, mapCursor, key)
+				mapBuffer, mapCursor = proto.writeTag(mapBuffer, mapCursor, 2, proto.wireTypes.lengthDelimited)
+				mapBuffer, mapCursor = proto.writeString(mapBuffer, mapCursor, value)
+				output, cursor = proto.writeTag(output, cursor, 3, proto.wireTypes.lengthDelimited)
+				output, cursor = proto.writeBuffer(output, cursor, mapBuffer, mapCursor)
+			end
+		end
+
+		if self.input ~= nil then
+			output, cursor = proto.writeTag(output, cursor, 4, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeBuffer(output, cursor, self.input, buffer.len(self.input))
 		end
 
 		local shrunkBuffer = buffer.create(cursor)
@@ -6754,6 +6806,23 @@ do
 					local value
 					value, cursor = proto.readBuffer(input, cursor)
 					self.stdio = proto.decodeString(value)
+					continue
+				elseif field == 3 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+
+					local mapEntry = messages.ProcessOptions_EnvEntry.decode(value)
+
+					local keyDefault = ""
+					local valueDefault = ""
+
+					self.env[mapEntry.key or keyDefault] = mapEntry.value or valueDefault
+
+					continue
+				elseif field == 4 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.input = value
 					continue
 				end
 
@@ -6790,6 +6859,19 @@ do
 			output.stdio = self.stdio
 		end
 
+		if self.env ~= nil and next(self.env) ~= nil then
+			local newOutput = {}
+			for key, value in self.env do
+				assert(value ~= nil, "Luau")
+				newOutput[key] = value
+			end
+			output.env = newOutput
+		end
+
+		if self.input ~= nil then
+			output.input = proto.json.serializeBuffer(self.input)
+		end
+
 		return output
 	end
 
@@ -6804,6 +6886,19 @@ do
 			self.stdio = input.stdio
 		end
 
+		if input.env ~= nil then
+			local newOutput: { [string]: string? } = {}
+			for key, value in input.env do
+				newOutput[key] = value
+			end
+
+			self.env = newOutput
+		end
+
+		if input.input ~= nil then
+			self.input = proto.json.deserializeBuffer(input.input)
+		end
+
 		return self
 	end
 
@@ -6815,6 +6910,122 @@ do
 	messages.ProcessOptions = _ProcessOptionsImpl :: any -- Luau: Not sure why this intersection fails.
 
 	typeRegistry.default:register(messages.ProcessOptions)
+end
+
+do
+	local _ProcessOptions_EnvEntryImpl = {}
+	_ProcessOptions_EnvEntryImpl.__index = _ProcessOptions_EnvEntryImpl
+
+	function _ProcessOptions_EnvEntryImpl.new(data: _ProcessOptions_EnvEntryPartialFields?): ProcessOptions_EnvEntry
+		return setmetatable({
+			key = if data == nil or data.key == nil then "" else data.key,
+			value = if data == nil or data.value == nil then "" else data.value,
+		}, _ProcessOptions_EnvEntryImpl :: _ProcessOptions_EnvEntryImpl)
+	end
+
+	function _ProcessOptions_EnvEntryImpl.encode(self: ProcessOptions_EnvEntry): buffer
+		local output = buffer.create(0)
+		local cursor = 0
+
+		if self.key ~= nil and self.key ~= "" then
+			output, cursor = proto.writeTag(output, cursor, 1, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.key)
+		end
+
+		if self.value ~= nil and self.value ~= "" then
+			output, cursor = proto.writeTag(output, cursor, 2, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.value)
+		end
+
+		local shrunkBuffer = buffer.create(cursor)
+		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
+		return shrunkBuffer
+	end
+
+	function _ProcessOptions_EnvEntryImpl.decode(input: buffer): ProcessOptions_EnvEntry
+		local self = _ProcessOptions_EnvEntryImpl.new()
+		local cursor = 0
+
+		while cursor < buffer.len(input) do
+			local field, wireType
+			field, wireType, cursor = proto.readTag(input, cursor)
+
+			if wireType == proto.wireTypes.varint then
+				-- No fields
+
+				local _
+				_, cursor = proto.readVarInt(input, cursor)
+			elseif wireType == proto.wireTypes.lengthDelimited then
+				if field == 1 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.key = proto.decodeString(value)
+					continue
+				elseif field == 2 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.value = proto.decodeString(value)
+					continue
+				end
+
+				local length
+				length, cursor = proto.readVarInt(input, cursor)
+
+				cursor += length
+			elseif wireType == proto.wireTypes.i32 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed32(input, cursor)
+			elseif wireType == proto.wireTypes.i64 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed64(input, cursor)
+			else
+				error("Unsupported wire type: " .. wireType)
+			end
+		end
+
+		return self
+	end
+
+	function _ProcessOptions_EnvEntryImpl.jsonEncode(self: ProcessOptions_EnvEntry): any
+		local output = {}
+
+		if self.key ~= nil and self.key ~= "" then
+			output.key = self.key
+		end
+
+		if self.value ~= nil and self.value ~= "" then
+			output.value = self.value
+		end
+
+		return output
+	end
+
+	function _ProcessOptions_EnvEntryImpl.jsonDecode(input: { [string]: any }): ProcessOptions_EnvEntry
+		local self = _ProcessOptions_EnvEntryImpl.new()
+
+		if input.key ~= nil then
+			self.key = input.key
+		end
+
+		if input.value ~= nil then
+			self.value = input.value
+		end
+
+		return self
+	end
+
+	_ProcessOptions_EnvEntryImpl.descriptor = {
+		name = "ProcessOptions_EnvEntry",
+		fullName = "rodeo.runtime.EnvEntry",
+	}
+
+	messages.ProcessOptions_EnvEntry = _ProcessOptions_EnvEntryImpl :: any -- Luau: Not sure why this intersection fails.
+
+	typeRegistry.default:register(messages.ProcessOptions_EnvEntry)
 end
 
 do

@@ -29,11 +29,10 @@ So a Lune-targeted script like:
 ```luau
 local fs = require("@lune/fs")
 local process = require("@lune/process")
-local serde = require("@lune/serde")
 
-local path = process.args[1] or "config.json"
-local config = serde.decode("json", fs.readFile(path))
-print(process.os, config)
+local config = fs.readFile("config.json")
+local result = process.exec("git", { "rev-parse", "--short", "HEAD" })
+print(config, result.stdout)
 ```
 
 runs unmodified under `rodeo run`.

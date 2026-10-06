@@ -298,7 +298,7 @@ export function io(run: RunFn): void {
   });
 }
 
-// ── process (10 tests) ────────────────────────────────────────────────────
+// ── process (12 tests) ────────────────────────────────────────────────────
 
 export function process(run: RunFn): void {
   it("process: cwd, homedir, execpath are functions", async () => {
@@ -382,6 +382,31 @@ export function process(run: RunFn): void {
     expect(result.ok).toBe(true);
     expect(result.output).toContain('"ok":true');
     expect(result.output).toContain('"hasOut":true');
+  });
+
+  it("process: run adds env to the child's environment", async () => {
+    const result = await run({
+      showReturn: true,
+      source: `local p = require("@rodeo/process")
+        local r = p.run({ "${RT}", "-e", "process.stdout.write(process.env.RODEO_TEST_VAR)" }, {
+          env = { RODEO_TEST_VAR = "from env" },
+        })
+        return r.out`,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("from env");
+  });
+
+  it("process: run writes input to the child's stdin", async () => {
+    const result = await run({
+      showReturn: true,
+      source: `local p = require("@rodeo/process")
+        local fromString = p.run(${catArgs}, { input = "piped in" }).out
+        local fromBuffer = p.run(${catArgs}, { input = buffer.fromstring("buffered") }).out
+        return fromString .. "|" .. fromBuffer`,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("piped in|buffered");
   });
 
   it("process: create + stream read", async () => {

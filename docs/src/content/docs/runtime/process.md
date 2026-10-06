@@ -73,6 +73,10 @@ Options accepted by `run`, `system`, and `create`. All fields optional.
 
 `stdio` applies to all three streams; per-stream overrides win.
 
+`env` adds variables to the inherited environment.
+
+`input` (`run` and `system` only) is written to the child's stdin, which is then closed; without it, a child that reads stdin gets end-of-file.
+
 ```luau
 type ProcessRunOptions = {
 	cwd: string?,
@@ -81,6 +85,7 @@ type ProcessRunOptions = {
 	stdout: StdioKind?,
 	stderr: StdioKind?,
 	env: { [string]: string }?,
+	input: (string | buffer)?,
 }
 ```
 

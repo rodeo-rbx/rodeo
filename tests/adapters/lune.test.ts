@@ -11,7 +11,7 @@
 //   out-of-scope — no adapter for the module; skipped with reason
 //   helper       — required by tests, not a test itself
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -35,6 +35,13 @@ const RUN: string[] = [
   "fs/move.luau",
   "process/args.luau",
   "process/cwd.luau",
+  "process/exec/async.luau",
+  "process/exec/basic.luau",
+  "process/exec/cwd.luau",
+  "process/exec/no_panic.luau",
+  "process/exec/shell.luau",
+  "process/exec/stdin.luau",
+  "process/exec/stdio.luau",
   "process/exit.luau",
   "serde/json/decode.luau",
   "stdio/ewrite.luau",
@@ -56,10 +63,16 @@ const ARGS: Record<string, string[]> = {
   "process/args.luau": ["Foo", "Bar"],
 };
 
+// Files some tests expect in their cwd (lune's runner starts at its repo
+// root). Harness provisioning, not a test edit.
+const CWD_FILES: Record<string, string[]> = {
+  "process/exec/basic.luau": ["Cargo.toml", ".gitignore"],
+  "process/exec/shell.luau": ["Cargo.toml", ".gitignore"],
+};
+
 // Prefix (directory or exact file) → reason. In-scope modules, missing surface.
 const GAP: Record<string, string> = {
   "process/create": "adapter has no process.create (use @rodeo/process create/run)",
-  "process/exec": "adapter has no process.exec (use @rodeo/process run/system)",
   "process/env.luau": "rodeo env is a read-only remote snapshot; lune env is assignable",
   "serde/compression": "adapter has no serde.compress/decompress",
   "serde/hashing": "adapter has no serde.hash/hmac",
@@ -161,6 +174,7 @@ describe("lune conformance", () => {
         // that out of the repo (and out of rodeo's actual bin/).
         const cwd = mkdtempSync(join(tmpdir(), "rodeo-lune-conformance-"));
         scratchDirs.push(cwd);
+        for (const name of CWD_FILES[file] ?? []) writeFileSync(join(cwd, name), "");
         const extraArgs = ARGS[file] ? ["--", ...ARGS[file]] : [];
         const proc = Bun.spawnSync(
           [RODEO, "run", join(SUITE_DIR, file), "--port", String(PORT), ...extraArgs],
