@@ -11,8 +11,11 @@
 // Expected behavior: both sizes either work or fail fast with a clear error.
 import { test, expect, afterAll } from "bun:test";
 import { join } from "path";
+import { killLaunchedStudios } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
+// Studios this file launches are reaped by session, never by pattern.
+const STARTED = Date.now();
 const RODEO = join(ROOT, "bin", "rodeo");
 
 const procs: Bun.Subprocess[] = [];
@@ -20,7 +23,7 @@ const procs: Bun.Subprocess[] = [];
 function cleanup(port: number) {
   Bun.spawnSync(["pkill", "-f", `__master --port ${port}`]);
   Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${port + 1}`]);
-  Bun.spawnSync(["pkill", "-f", `${ROOT}/.rodeo/.temp/rodeo-`]);
+  killLaunchedStudios(port, STARTED);
 }
 
 afterAll(() => {

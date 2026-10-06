@@ -5,7 +5,7 @@
 // so the shared factories can run against the CLI unchanged.
 
 import type { Subprocess } from "bun";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -83,6 +83,29 @@ export function killMatching(pattern: string): void {
     return;
   }
   Bun.spawnSync(["pkill", "-9", "-f", pattern]);
+}
+
+/** Session ids of the Studios a serve on `masterPort` launched since
+ *  `sinceMs`: each launch's RunScript bootstrap, written to the serve's
+ *  .rodeo/.temp (the repo root for tests), stamps its backend port. Lets a
+ *  test reap exactly its own Studios; the developer's, other sessions' and
+ *  other projects' Studios are never touched. */
+export function launchedSessions(masterPort: number, sinceMs: number): string[] {
+  const dir = join(".rodeo", ".temp");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).flatMap((name) => {
+    const session = /^rodeo-bootstrap-([0-9a-f-]+)\.luau$/.exec(name)?.[1];
+    if (!session) return [];
+    const path = join(dir, name);
+    const ours = statSync(path).mtimeMs >= sinceMs && readFileSync(path, "utf8").includes(`"rodeoPort", ${masterPort + 1})`);
+    return ours ? [session] : [];
+  });
+}
+
+/** Force-kill the Studios a serve on `masterPort` launched since `sinceMs`
+ *  (see launchedSessions), e.g. `--detach` Studios that outlive their serve. */
+export function killLaunchedStudios(masterPort: number, sinceMs: number): void {
+  for (const session of launchedSessions(masterPort, sinceMs)) killMatching(`rodeo-bootstrap-${session}`);
 }
 
 /** PIDs of processes whose command line matches `pattern`. */

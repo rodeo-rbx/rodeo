@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import {
-  killMatching,
+  killLaunchedStudios,
+  launchedSessions,
   pluginFileFor,
   processMatches,
   runRodeo,
@@ -12,20 +12,8 @@ import {
 } from "../helpers.js";
 
 const PORT = 46202;
+// Studios this file launches are found and reaped by session, never by pattern.
 const STARTED = Date.now();
-
-// Sessions this file launched: each launch's RunScript bootstrap, written to
-// the serve's .rodeo/.temp, stamps the backend port. Other Studios on the
-// machine (the developer's, other sessions' and projects') are never touched.
-function launchedSessions(): string[] {
-  const dir = join(".rodeo", ".temp");
-  return readdirSync(dir).flatMap((name) => {
-    const session = /^rodeo-bootstrap-([0-9a-f-]+)\.luau$/.exec(name)?.[1];
-    const path = join(dir, name);
-    const ours = session && statSync(path).mtimeMs >= STARTED && readFileSync(path, "utf8").includes(`"rodeoPort", ${PORT + 1})`);
-    return ours ? [session] : [];
-  });
-}
 
 describe("--detach flag (CLI)", () => {
   it("run --place --detach keeps Studio alive", async () => {
@@ -39,7 +27,7 @@ describe("--detach flag (CLI)", () => {
     await Bun.sleep(1000);
 
     // The launched Studio should still be running.
-    expect(launchedSessions().some((session) => processMatches(`rodeo-bootstrap-${session}`))).toBe(true);
+    expect(launchedSessions(PORT, STARTED).some((session) => processMatches(`rodeo-bootstrap-${session}`))).toBe(true);
   });
 
   // Each studio backend installs its own plugin file and removes it on exit —
@@ -65,7 +53,7 @@ describe("--detach flag (CLI)", () => {
     }
 
     // Kill the detached Studio; the next sweep has nothing to keep the file for.
-    for (const session of launchedSessions()) killMatching(`rodeo-bootstrap-${session}`);
+    killLaunchedStudios(PORT, STARTED);
     await Bun.sleep(2000);
     const another = spawnBackground(["serve", "--port", String(PORT + 20)]);
     try {

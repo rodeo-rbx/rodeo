@@ -14,8 +14,11 @@
 import { test, expect, afterAll } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
+import { killLaunchedStudios } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
+// Studios this file launches are reaped by session, never by pattern.
+const STARTED = Date.now();
 const RODEO = join(ROOT, "bin", "rodeo");
 const PORT = 47410;
 const FIXTURE_DIR = "/tmp/rodeo-oversized-bundle-repro";
@@ -28,7 +31,7 @@ function cleanup() {
   }
   Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
   Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
-  Bun.spawnSync(["pkill", "-f", `${ROOT}/.rodeo/.temp/rodeo-`]);
+  killLaunchedStudios(PORT, STARTED);
   try { rmSync(FIXTURE_DIR, { recursive: true, force: true }); } catch {}
 }
 

@@ -7,8 +7,11 @@
 // whether that binding actually works, for both SIGTERM and SIGKILL.
 import { test, expect, afterAll } from "bun:test";
 import { join } from "path";
+import { killLaunchedStudios } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
+// Studios this file launches are reaped by session, never by pattern.
+const STARTED = Date.now();
 const RODEO = join(ROOT, "bin", "rodeo");
 
 const procs: Bun.Subprocess[] = [];
@@ -34,8 +37,7 @@ async function waitForServe(port: number, timeoutMs: number): Promise<boolean> {
 function cleanup(port: number) {
   Bun.spawnSync(["pkill", "-f", `__master --port ${port}`]);
   Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${port + 1}`]);
-  // Studio opened for this run's temp place, if any (repo-scoped pattern).
-  Bun.spawnSync(["pkill", "-f", `${ROOT}/.rodeo/.temp/rodeo-`]);
+  killLaunchedStudios(port, STARTED);
 }
 
 afterAll(() => {
