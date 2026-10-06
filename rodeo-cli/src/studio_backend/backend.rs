@@ -554,10 +554,12 @@ async fn handle_master_msg(
         proto::master_message::Msg::RunCompleted(rc) => {
             let execution_id = rc.execution_id.clone();
             let guard = state.lock().await;
-            // Profile scanner: unregister by execution_id.
+            // Profile scanner: the run's last dumps land after it completes,
+            // so the scanner drains them before unregistering the run, which
+            // closes dump_rx and sends FilesComplete.
             if let Some(ref scanner) = guard.profile_scanner {
-                scanner.unregister(&execution_id);
-                tracing::debug!(execution_id, "backend: unregistered scanner on RunCompleted");
+                scanner.complete(&execution_id);
+                tracing::debug!(execution_id, "backend: profile scanner draining on RunCompleted");
             }
         }
         proto::master_message::Msg::LaunchStudio(cmd) => {

@@ -27,6 +27,10 @@ rodeo captures the microprofiler frames recorded while your script was running
 and writes the dumps into `./profiles`. This command doesn't launch or close
 Studio, so you can run it as many times as you like against the same instance.
 
+While a serve runs, rodeo deletes Studio's auto-capture dumps from Roblox's
+`ProfilerCaptures` folder five minutes after they're written. The copies in
+`./profiles` stay.
+
 ## 3. Analyze the dumps
 
 Once the dumps are collected, you can either:

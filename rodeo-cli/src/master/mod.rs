@@ -988,7 +988,8 @@ impl MasterState {
             if let Some(run) = self.active_runs.get_mut(execution_id) {
                 run.state = new_state;
             }
-            // Tell studio backend(s) — profile scanner unregisters on RunCompleted.
+            // Tell studio backend(s) — the profile scanner drains the run's
+            // tail dumps, then unregisters it, and FilesComplete follows.
             for backend in self.backends.values() {
                 let _ = backend.tx.send(rodeo_proto::MasterMessage {
                     msg: Some(rodeo_proto::master_message::Msg::RunCompleted(Box::new(rodeo_proto::RunCompleted {
