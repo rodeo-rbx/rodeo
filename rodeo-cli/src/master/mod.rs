@@ -1185,11 +1185,19 @@ fn build_studios(
         .map(|(id, members)| {
             let edit = members.iter().copied().find(|v| v.dom_kind.as_deref() == Some("edit"));
             // Studio mode: a non-edit DOM's mode (run/test/play) if present, else
-            // the edit DOM's mode.
-            let active_mode_dom = members
-                .iter()
-                .copied()
-                .find(|v| matches!(v.dom_kind.as_deref(), Some("server") | Some("client")));
+            // the edit DOM's mode. A solo test's server reports "play" until its
+            // client's CanLeaveTest verdict reaches it, while the client knows
+            // at once; a multiplayer test's DOMs never report "test". So any
+            // session DOM saying "test" settles it, whichever DOM comes first.
+            let session_doms = || {
+                members
+                    .iter()
+                    .copied()
+                    .filter(|v| matches!(v.dom_kind.as_deref(), Some("server") | Some("client")))
+            };
+            let active_mode_dom = session_doms()
+                .find(|v| v.mode.as_deref() == Some("test"))
+                .or_else(|| session_doms().next());
             let studio_mode = active_mode_dom
                 .or(edit)
                 .and_then(|v| v.mode.clone())
@@ -1460,6 +1468,26 @@ mod tests {
             }
         }
         None
+    }
+
+    // A solo test's server reports "play" until its client's verdict reaches
+    // it. The studio's mode must not depend on which DOM is listed first: the
+    // CLI's play path reads "play" as a running multiplayer test (#39).
+    #[test]
+    fn a_solo_test_is_test_while_its_server_still_reports_play() {
+        let mode_of = |doms: &[rodeo_proto::DomSnapshot]| {
+            let studios = build_studios(doms, &Default::default());
+            assert_eq!(studios.len(), 1);
+            studios[0].studio_mode.clone()
+        };
+        let (edit, server_play, client_test) = (dom("e", "edit", "edit", "S"), dom("s", "server", "play", "S"), dom("c", "client", "test", "S"));
+        assert_eq!(mode_of(&[edit.clone(), server_play.clone(), client_test.clone()]), "test");
+        assert_eq!(mode_of(&[client_test, server_play.clone(), edit.clone()]), "test");
+        // A multiplayer test, with and without its clients.
+        assert_eq!(mode_of(&[edit.clone(), server_play.clone(), dom("c", "client", "play", "S")]), "play");
+        assert_eq!(mode_of(&[edit.clone(), server_play]), "play");
+        assert_eq!(mode_of(&[edit.clone(), dom("s", "server", "run", "S")]), "run");
+        assert_eq!(mode_of(&[edit]), "edit");
     }
 
     // Regression: a manually-installed plugin reports SESSION_GUID=nil, so its
