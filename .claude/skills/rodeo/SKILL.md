@@ -89,7 +89,7 @@ Run a script in Studio.
 - `--context plugin|server|client|elevated|cmdbar` — the identity level to run at: plugin, server-runtime identity, client-runtime identity, command bar via StudioMCP (elevated), or command bar via the launch bootstrap's bridge (cmdbar; edit DOM of a rodeo-launched Studio only). Not a script class
 - `--dom edit|server|client` — which DOM (usually inferred); `edit` targets the edit DOM even while a test/play session runs
 - `--studio-id <id>` — scope routing to one studio (id from `rodeo state`; unique prefix ok)
-- `--dom-id <id>` — pin the run to one DOM (id from `rodeo state`; unique prefix ok). Only `--context` may accompany it
+- `--dom-id <id>` — pin the run to one DOM (id from `rodeo state`; unique prefix ok), including a server or client DOM of a running session. Only `--context` may accompany it, and it must fit the DOM: `server` needs a server DOM, `client` a client DOM, `cmdbar` the edit DOM; `plugin` (the default) and `elevated` fit any
 - `--show-return` — print return value to stdout (any size)
 - `--return <path>` — write return value to file: `.luau`/`.lua` emits Luau source, anything else JSON. Size-unbounded.
 - `--output <path>` — write execution output (prints/logs) to file

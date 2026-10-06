@@ -482,20 +482,19 @@ impl proto::RunService for RodeoServices {
 
         // Validate the routing spec up front — an invalid route fails the run
         // immediately (previously a garbage target from a client library
-        // matched nothing and queued forever).
+        // matched nothing and queued forever). A pinned run's context is
+        // checked against its DOM's kind at dispatch instead, where the kind
+        // is known (find_match_for_run).
         let route = crate::shared::target::RouteSpec::from_strings(
             submit.mode.as_deref(),
             submit.dom_kind.as_deref(),
             submit.context.as_deref(),
         )
         .and_then(|r| {
-            r.resolve()?;
-            if submit.dom_id.is_some()
-                && (r.mode.is_some() || r.dom_kind.is_some())
-            {
-                anyhow::bail!(
-                    "dom_id pins the run to one DOM — mode/dom_kind don't apply (context is allowed)"
-                );
+            if submit.dom_id.is_some() {
+                r.validate_pinned()?;
+            } else {
+                r.resolve()?;
             }
             Ok(r)
         });
@@ -567,12 +566,7 @@ impl proto::RunService for RodeoServices {
                 created_at: crate::util::time::now(),
             };
 
-            let routed = guard.route_or_queue(run_request);
-            if routed {
-                tracing::info!(id = execution_id.as_str(), "routed");
-            } else {
-                tracing::info!(id = execution_id.as_str(), "queued (no matching dom)");
-            }
+            guard.route_or_queue(run_request);
 
             execution_id
         };

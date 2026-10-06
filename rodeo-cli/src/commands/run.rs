@@ -251,14 +251,17 @@ fn resolve_script(args: &mut RunArgs) -> Result<ResolvedScript> {
 /// Build RunConfig: validate the route, build log filter, assemble config.
 fn prepare_execution(args: RunArgs, resolved: ResolvedScript) -> Result<RunConfig> {
     let route = args_route(&args)?;
-    // Validate the route now (fast error) and enforce the dom-id pin rule.
-    if !route.is_empty() {
+    // Validate the route now (fast error) and enforce the dom-id pin rule. A
+    // pinned run skips resolve(): it would infer a server/client DOM from
+    // --context and reject it against the default edit mode, so no server or
+    // client DOM could be pinned (issue #14). The master checks --context
+    // against the pinned DOM's actual kind when it dispatches.
+    if args.place.dom_id.is_some() {
+        if route.mode.is_some() || route.dom_kind.is_some() {
+            bail!("--dom-id pins the run to one DOM — mode/dom don't apply (only --context does)");
+        }
+    } else if !route.is_empty() {
         route.resolve()?;
-    }
-    if args.place.dom_id.is_some()
-        && (route.mode.is_some() || route.dom_kind.is_some())
-    {
-        bail!("--dom-id pins the run to one DOM — mode/dom don't apply (only --context does)");
     }
     if args.studio_id.is_some() && args.place.dom_id.is_some() {
         bail!("--studio-id and --dom-id are mutually exclusive (a DOM already identifies its studio)");

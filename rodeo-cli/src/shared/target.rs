@@ -203,12 +203,7 @@ impl RouteSpec {
             (M::Play, _) => {}
         }
 
-        let ok_context = match dom_kind {
-            K::Edit => matches!(context, C::Plugin | C::Elevated | C::Cmdbar),
-            K::Server => matches!(context, C::Server | C::Plugin | C::Elevated),
-            K::Client => matches!(context, C::Client | C::Plugin | C::Elevated),
-        };
-        if !ok_context {
+        if !context_fits(context, dom_kind) {
             let hint = if context == C::Cmdbar {
                 " — cmdbar's bridge lives only on the edit DOM; use --dom edit, or --context elevated"
             } else {
@@ -226,6 +221,57 @@ impl RouteSpec {
             dom_kind,
             context,
         })
+    }
+
+    /// Validate a spec for a run pinned to one DOM (`--dom-id`,
+    /// `Dom.runCode`). The DOM already fixes mode and dom kind, so only
+    /// `context` may be given. `resolve()` is the wrong check here: it infers
+    /// a dom kind from the context and tests it against the default edit
+    /// mode, which rejects every server or client pin (issue #14). Whether
+    /// the context fits the DOM is decided by [`check_pinned_context`] once
+    /// the DOM's kind is known.
+    pub fn validate_pinned(&self) -> Result<()> {
+        if self.mode.is_some() || self.dom_kind.is_some() {
+            bail!("dom_id pins the run to one DOM — mode/dom_kind don't apply (context is allowed)");
+        }
+        Ok(())
+    }
+}
+
+/// Whether code at `context` can run on a DOM of `kind`.
+fn context_fits(context: RunContext, kind: DomKind) -> bool {
+    use DomKind as K;
+    use RunContext as C;
+    match kind {
+        K::Edit => matches!(context, C::Plugin | C::Elevated | C::Cmdbar),
+        K::Server => matches!(context, C::Server | C::Plugin | C::Elevated),
+        K::Client => matches!(context, C::Client | C::Plugin | C::Elevated),
+    }
+}
+
+/// Whether a pinned run's context can run on the pinned DOM, given the DOM's
+/// actual kind. Plugin and elevated fit every DOM; server and client need their
+/// own DOM kind; cmdbar needs the edit DOM.
+pub fn check_pinned_context(context: RunContext, kind: DomKind) -> Result<()> {
+    if context_fits(context, kind) {
+        return Ok(());
+    }
+    let hint = match context {
+        RunContext::Cmdbar => " — cmdbar's bridge lives only on the edit DOM",
+        _ => "",
+    };
+    bail!(
+        "context {} cannot run on the pinned DOM, which is a {} DOM{hint}",
+        context.as_str(),
+        kind.as_str()
+    );
+}
+
+impl RunContext {
+    /// Whether this context fits only some DOM kinds, so a pinned run at it
+    /// must wait for its DOM's kind to be known before dispatching.
+    pub fn depends_on_dom_kind(self) -> bool {
+        !matches!(self, Self::Plugin | Self::Elevated)
     }
 }
 
@@ -340,5 +386,44 @@ mod tests {
         assert!(RouteSpec::from_strings(Some("editt"), None, None).is_err());
         assert!(RouteSpec::from_strings(None, Some("edom"), None).is_err());
         assert!(RouteSpec::from_strings(None, None, Some("identity")).is_err());
+    }
+
+    // Issue #14: a pin to a server or client DOM with its own context must
+    // validate. resolve() rejects exactly these specs (no --mode → edit), so
+    // pinned runs must not go through it.
+    #[test]
+    fn pinned_specs_allow_any_context_but_no_mode_or_dom() {
+        for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Elevated), Some(C::Cmdbar)] {
+            let s = spec(None, None, context);
+            s.validate_pinned().unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        }
+        assert!(spec(None, None, Some(C::Client)).resolve().is_err(), "resolve() is the wrong check for pins");
+        assert!(spec(Some(M::Play), None, Some(C::Client)).validate_pinned().is_err());
+        assert!(spec(None, Some(K::Client), None).validate_pinned().is_err());
+        assert!(spec(Some(M::Edit), None, None).validate_pinned().is_err());
+    }
+
+    #[test]
+    fn pinned_context_is_checked_against_the_dom_kind() {
+        let fits: &[(C, K)] = &[
+            (C::Plugin, K::Edit), (C::Plugin, K::Server), (C::Plugin, K::Client),
+            (C::Elevated, K::Edit), (C::Elevated, K::Server), (C::Elevated, K::Client),
+            (C::Server, K::Server), (C::Client, K::Client), (C::Cmdbar, K::Edit),
+        ];
+        let misfits: &[(C, K)] = &[
+            (C::Server, K::Edit), (C::Server, K::Client),
+            (C::Client, K::Edit), (C::Client, K::Server),
+            (C::Cmdbar, K::Server), (C::Cmdbar, K::Client),
+        ];
+        for (c, k) in fits {
+            check_pinned_context(*c, *k).unwrap_or_else(|e| panic!("{c:?} on {k:?}: {e}"));
+        }
+        for (c, k) in misfits {
+            let err = check_pinned_context(*c, *k).expect_err(&format!("{c:?} on {k:?} should not fit"));
+            assert!(err.to_string().contains(&format!("which is a {} DOM", k.as_str())), "{err}");
+        }
+        // Only contexts that fit some kinds but not others wait for the kind.
+        assert!(!C::Plugin.depends_on_dom_kind() && !C::Elevated.depends_on_dom_kind());
+        assert!(C::Server.depends_on_dom_kind() && C::Client.depends_on_dom_kind() && C::Cmdbar.depends_on_dom_kind());
     }
 }

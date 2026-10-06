@@ -325,6 +325,13 @@ impl MasterState {
         result
     }
 
+    /// A DOM's latest snapshot, from whichever backend reports it.
+    fn dom_snapshot(&self, dom_id: &str) -> Option<rodeo_proto::DomSnapshot> {
+        self.backends.values().find_map(|backend| {
+            backend.state_rx.borrow().doms.iter().find(|v| v.dom_id == dom_id).cloned()
+        })
+    }
+
     /// Find the backend that owns a DOM (by checking snapshots).
     fn backend_for_dom(&self, dom_id: &str) -> Option<&grpc::BackendConnection> {
         for backend in self.backends.values() {
@@ -369,14 +376,29 @@ impl MasterState {
     }
 
     /// Find a matching DOM for a run request using proto snapshots.
-    pub fn find_match_for_run(&self, run: &RunRequest) -> Option<String> {
+    /// `Ok(None)` keeps the run queued; `Err` means it can never dispatch.
+    pub fn find_match_for_run(&self, run: &RunRequest) -> Result<Option<String>, String> {
         // Direct DOM targeting by ID
         if let Some(ref wanted_dom) = run.dom_id {
             // Check if DOM exists in any backend snapshot
-            if self.backend_for_dom(wanted_dom).is_some() {
-                return Some(wanted_dom.clone());
-            }
-            return None;
+            let Some(dom) = self.dom_snapshot(wanted_dom) else {
+                return Ok(None);
+            };
+            // Plugin/elevated fit every DOM. Any other context must fit the
+            // pinned DOM's kind — checked here rather than at submit, because
+            // the kind is the DOM's, not the caller's (issue #14). A DOM's kind
+            // never changes, so a misfit is final; a kind not reported yet
+            // (the DOM's state hasn't landed) waits for the next snapshot.
+            let Some(context) = run.route.context.filter(|c| c.depends_on_dom_kind()) else {
+                return Ok(Some(wanted_dom.clone()));
+            };
+            let kind = dom.dom_kind.as_deref().and_then(|k| crate::shared::target::DomKind::parse(k).ok());
+            return match kind {
+                None => Ok(None),
+                Some(kind) => crate::shared::target::check_pinned_context(context, kind)
+                    .map(|()| Some(wanted_dom.clone()))
+                    .map_err(|e| e.to_string()),
+            };
         }
 
         // Validated at submit; an empty route matches any connected DOM.
@@ -427,7 +449,7 @@ impl MasterState {
             }
         }
 
-        best.map(|(dom_id, _)| dom_id)
+        Ok(best.map(|(dom_id, _)| dom_id))
     }
 
     /// Build the RunCommand message sequence for a RunRequest. A script over
@@ -551,15 +573,29 @@ impl MasterState {
         });
     }
 
-    /// Route a run to a matching DOM, or queue it as pending.
-    pub fn route_or_queue(&mut self, run: RunRequest) -> bool {
-        if let Some(dom_id) = self.find_match_for_run(&run) {
-            self.dispatch_run(&dom_id, run);
-            return true;
+    /// Route a run to a matching DOM, queue it as pending, or reject it.
+    pub fn route_or_queue(&mut self, run: RunRequest) {
+        let id = run.execution_id.clone();
+        match self.find_match_for_run(&run) {
+            Ok(Some(dom_id)) => {
+                self.dispatch_run(&dom_id, run);
+                info!(id = id.as_str(), "routed");
+            }
+            Ok(None) => {
+                self.pending_runs.push(run);
+                self.reconcile();
+                info!(id = id.as_str(), "queued (no matching dom)");
+            }
+            Err(reason) => Self::reject_run(run, &reason),
         }
-        self.pending_runs.push(run);
-        self.reconcile();
-        false
+    }
+
+    /// End a run that can never dispatch, the same way submit rejects an
+    /// invalid route. Dropping the run drops its client channel, which ends
+    /// the client's event stream after the Disconnect.
+    fn reject_run(run: RunRequest, reason: &str) {
+        info!(id = run.execution_id.as_str(), error = reason, "rejected: invalid route");
+        let _ = run.client_tx.send(ClientMsg::Disconnect(format!("invalid route: {reason}")));
     }
 
     /// Single entry point for all event-driven state reconciliation:
@@ -576,16 +612,23 @@ impl MasterState {
         if self.pending_runs.is_empty() {
             return;
         }
-        let mut routed = Vec::new();
+        let mut decided = Vec::new();
         for (i, run) in self.pending_runs.iter().enumerate() {
-            if let Some(dom_id) = self.find_match_for_run(run) {
-                routed.push((i, dom_id));
+            match self.find_match_for_run(run) {
+                Ok(Some(dom_id)) => decided.push((i, Ok(dom_id))),
+                Ok(None) => {}
+                Err(reason) => decided.push((i, Err(reason))),
             }
         }
-        for (i, dom_id) in routed.into_iter().rev() {
+        for (i, decision) in decided.into_iter().rev() {
             let run = self.pending_runs.remove(i);
-            info!(id = run.execution_id.as_str(), dom = &dom_id[..8.min(dom_id.len())], "routed from queue");
-            self.dispatch_run(&dom_id, run);
+            match decision {
+                Ok(dom_id) => {
+                    info!(id = run.execution_id.as_str(), dom = &dom_id[..8.min(dom_id.len())], "routed from queue");
+                    self.dispatch_run(&dom_id, run);
+                }
+                Err(reason) => Self::reject_run(run, &reason),
+            }
         }
     }
 
@@ -943,13 +986,25 @@ impl MasterState {
             })
             // Queued runs aren't pinned to a DOM yet — only the request is known.
             .chain(self.pending_runs.iter().map(|r| {
-                let resolved = r.route.resolve().ok();
+                // Pinned runs report as dispatch_run records them: no mode or
+                // dom kind (the DOM fixes both), context defaulting to plugin.
+                let (mode, dom_kind, context) = if r.dom_id.is_some() {
+                    let context = r.route.context.unwrap_or(crate::shared::target::RunContext::Plugin);
+                    (String::new(), String::new(), context.as_str().to_string())
+                } else {
+                    let resolved = r.route.resolve().ok();
+                    (
+                        resolved.map(|v| v.mode.as_str().to_string()).unwrap_or_default(),
+                        resolved.map(|v| v.dom_kind.as_str().to_string()).unwrap_or_default(),
+                        resolved.map(|v| v.context.as_str().to_string()).unwrap_or_default(),
+                    )
+                };
                 rodeo_proto::ProcessInfo {
                     execution_id: r.execution_id.clone(),
                     state: "queued".to_string(),
-                    mode: resolved.map(|v| v.mode.as_str().to_string()).unwrap_or_default(),
-                    dom_kind: resolved.map(|v| v.dom_kind.as_str().to_string()).unwrap_or_default(),
-                    context: resolved.map(|v| v.context.as_str().to_string()).unwrap_or_default(),
+                    mode,
+                    dom_kind,
+                    context,
                     created_at: r.created_at,
                     ..Default::default()
                 }
@@ -1238,5 +1293,111 @@ mod tests {
             Some(&("test".to_string(), vec!["edit-dom".to_string()])),
             "session-bearing DOM is keyed by its session_guid"
         );
+    }
+
+    fn play_dom(dom_id: &str, kind: Option<&str>) -> rodeo_proto::DomSnapshot {
+        rodeo_proto::DomSnapshot {
+            dom_id: dom_id.to_string(),
+            mode: Some("play".to_string()),
+            dom_kind: kind.map(|k| k.to_string()),
+            session_guid: Some("sess-A".to_string()),
+            connected: true,
+            ..Default::default()
+        }
+    }
+
+    fn pinned_run(dom_id: &str, context: Option<crate::shared::target::RunContext>) -> (RunRequest, mpsc::UnboundedReceiver<ClientMsg>) {
+        let (mut run, client_rx) = queued_run(crate::shared::target::RouteSpec { mode: None, dom_kind: None, context });
+        run.dom_id = Some(dom_id.to_string());
+        (run, client_rx)
+    }
+
+    /// The context of the first Run command sent to a DOM, if any.
+    fn dispatched_context(backend_rx: &mut mpsc::UnboundedReceiver<rodeo_proto::MasterMessage>) -> Option<(String, String)> {
+        while let Ok(msg) = backend_rx.try_recv() {
+            if let Some(rodeo_proto::master_message::Msg::DomServerMessage(m)) = msg.msg {
+                if let Some(rodeo_proto::server_message::Msg::Run(run)) = m.message.into_option().and_then(|s| s.msg) {
+                    return Some((m.dom_id, run.context));
+                }
+            }
+        }
+        None
+    }
+
+    // Issue #14: a run pinned to a play client or server DOM at that DOM's
+    // own context dispatches there.
+    #[test]
+    fn pinned_run_dispatches_to_a_play_dom_at_its_context() {
+        use crate::shared::target::RunContext as C;
+        for (kind, context) in [("client", C::Client), ("server", C::Server), ("client", C::Plugin), ("server", C::Elevated)] {
+            let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
+            state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", Some(kind))));
+            let (run, _client_rx) = pinned_run("play-dom", Some(context));
+
+            state.route_or_queue(run);
+
+            assert!(state.active_runs.contains_key("exec-1"), "{context:?} on {kind}: not dispatched");
+            assert_eq!(
+                dispatched_context(&mut backend_rx),
+                Some(("play-dom".to_string(), context.as_str().to_string())),
+                "{context:?} on {kind}"
+            );
+        }
+    }
+
+    // A context the pinned DOM can't host is final (a DOM's kind never
+    // changes): the run ends with the reason instead of queueing forever.
+    #[test]
+    fn pinned_run_at_a_context_the_dom_cannot_host_is_rejected() {
+        use crate::shared::target::RunContext as C;
+        for (dom, kind, context) in [("play-dom", "client", C::Server), ("play-dom", "server", C::Client), ("edit-dom", "edit", C::Client), ("play-dom", "client", C::Cmdbar)] {
+            let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
+            state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", Some("client"))));
+            state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| {
+                for d in s.doms.iter_mut().filter(|d| d.dom_id == dom) { d.dom_kind = Some(kind.to_string()); }
+            });
+            let (run, mut client_rx) = pinned_run(dom, Some(context));
+
+            state.route_or_queue(run);
+
+            assert!(state.active_runs.is_empty() && state.pending_runs.is_empty(), "{context:?} on {kind}");
+            assert!(dispatched_context(&mut backend_rx).is_none(), "{context:?} on {kind}");
+            match client_rx.try_recv() {
+                Ok(ClientMsg::Disconnect(reason)) => {
+                    let expected = format!("invalid route: context {} cannot run on the pinned DOM, which is a {kind} DOM", context.as_str());
+                    assert!(reason.starts_with(&expected), "{reason}");
+                }
+                _ => panic!("{context:?} on {kind}: expected a Disconnect"),
+            }
+            // The run was dropped, so the client's stream ends.
+            assert!(matches!(client_rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)));
+        }
+    }
+
+    // A pinned DOM whose kind isn't reported yet: a kind-dependent context
+    // waits for it; plugin (fits every DOM) dispatches at once as before.
+    #[test]
+    fn pinned_run_waits_for_an_unreported_dom_kind() {
+        use crate::shared::target::RunContext as C;
+        let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
+        state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", None)));
+
+        let (run, _client_rx) = pinned_run("play-dom", Some(C::Client));
+        state.route_or_queue(run);
+        assert_eq!(state.pending_runs.len(), 1);
+        assert!(dispatched_context(&mut backend_rx).is_none());
+
+        state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| {
+            for d in s.doms.iter_mut().filter(|d| d.dom_id == "play-dom") { d.dom_kind = Some("client".to_string()); }
+        });
+        state.process_pending();
+        assert!(state.pending_runs.is_empty());
+        assert_eq!(dispatched_context(&mut backend_rx), Some(("play-dom".to_string(), "client".to_string())));
+
+        let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
+        state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", None)));
+        let (run, _client_rx) = pinned_run("play-dom", None);
+        state.route_or_queue(run);
+        assert_eq!(dispatched_context(&mut backend_rx), Some(("play-dom".to_string(), "plugin".to_string())));
     }
 }

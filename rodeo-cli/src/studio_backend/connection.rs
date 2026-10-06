@@ -8,8 +8,10 @@ use rodeo_proto::{self as proto, ProcessState, StudioStateMsg};
 pub struct RunRequest {
     pub execution_id: String,
     pub script: String,
-    /// Routing spec (sparse, as submitted). Validated via `resolve()` at
-    /// submit time, so downstream `.resolve().unwrap()` is infallible.
+    /// Routing spec (sparse, as submitted). Routed runs are validated via
+    /// `resolve()` at submit time. Pinned runs (`dom_id`) carry at most a
+    /// context, which `resolve()` may reject (it assumes edit mode); the
+    /// context is checked against the pinned DOM's kind at dispatch.
     pub route: crate::shared::target::RouteSpec,
     /// Studio filter — restricts route matching to one studio. Matches a DOM
     /// whose launch `session_guid` (owned-studio launch pin, e.g. `run --place`)

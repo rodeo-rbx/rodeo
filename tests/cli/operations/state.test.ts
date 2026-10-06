@@ -4,8 +4,10 @@ import {
   spawnBackground,
   waitForProcess,
   waitForDom,
+  killLaunchedStudios,
   type BackgroundProcess,
 } from "../helpers.js";
+import { RodeoClient } from "../../../rodeo-client-ts/src/index.js";
 
 const PORT = 46210;
 
@@ -134,5 +136,89 @@ describe("state (CLI)", () => {
     ]);
     expect(result.ok).toBe(false);
     expect(result.stdout + result.stderr).toContain("edit");
+  });
+});
+
+// Issue #14: --dom-id could never pin a server or client DOM — the route
+// check ran before the pin rule and rejected (edit mode, client DOM) — so the
+// only pins that worked were plugin/elevated runs on the edit DOM.
+describe("--dom-id pins play DOMs (CLI)", () => {
+  const PORT = 47510;
+  // Studios this suite launches are reaped by session, never by pattern.
+  const STARTED = Date.now();
+  let bg: BackgroundProcess;
+  let serverDom = "";
+  let clientDom = "";
+
+  beforeAll(async () => {
+    bg = spawnBackground([
+      "run", "--port", String(PORT), "--place", "--mode", "play", "--context", "client",
+    ]);
+    const client = await RodeoClient.connect(`http://localhost:${PORT}`, { readyTimeoutMs: 60_000 });
+    try {
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const state = await client.getState().catch(() => null) as
+          { studios?: Array<{ sessionId?: string | null; doms: Array<{ domId: string; domKind: string }> }> } | null;
+        const studio = (state?.studios ?? []).find((s) => s.sessionId);
+        serverDom = studio?.doms.find((d) => d.domKind === "server")?.domId ?? "";
+        clientDom = studio?.doms.find((d) => d.domKind === "client")?.domId ?? "";
+        if (serverDom && clientDom) return;
+        await Bun.sleep(250);
+      }
+      throw new Error(`timed out waiting for the play session's server and client DOMs on port ${PORT}`);
+    } finally {
+      await client.close();
+    }
+  }, 180_000);
+  afterAll(async () => {
+    bg?.kill();
+    await bg?.exited;
+    killLaunchedStudios(PORT, STARTED);
+  });
+
+  it("pins a run to the client DOM at --context client", () => {
+    const result = runRodeo([
+      "run", "--port", String(PORT), "--dom-id", clientDom, "--context", "client",
+      "--show-return", "--source", "return game:GetService('Players').LocalPlayer ~= nil",
+    ]);
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.stdout).toContain("true");
+  });
+
+  it("pins a run to the server DOM at --context server (unique prefix ok)", () => {
+    const result = runRodeo([
+      "run", "--port", String(PORT), "--dom-id", serverDom.slice(0, 8), "--context", "server",
+      "--show-return", "--source", "return game:GetService('RunService'):IsServer()",
+    ]);
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.stdout).toContain("true");
+  });
+
+  it("pins a plugin-context run to the client DOM", () => {
+    const result = runRodeo([
+      "run", "--port", String(PORT), "--dom-id", clientDom,
+      "--show-return", "--source", "return game:GetService('RunService'):IsClient()",
+    ]);
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.stdout).toContain("true");
+  });
+
+  it("rejects a context the pinned DOM cannot host, naming its kind", () => {
+    const result = runRodeo([
+      "run", "--port", String(PORT), "--dom-id", clientDom, "--context", "server",
+      "--source", "return 1",
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.stdout + result.stderr).toContain("context server cannot run on the pinned DOM, which is a client DOM");
+  });
+
+  it("still rejects --mode with --dom-id", () => {
+    const result = runRodeo([
+      "run", "--port", String(PORT), "--dom-id", clientDom, "--mode", "play", "--context", "client",
+      "--source", "return 1",
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.stdout + result.stderr).toContain("mode/dom don't apply");
   });
 });
