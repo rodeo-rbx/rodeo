@@ -58,4 +58,9 @@ export type RunResult = {
    *  if the return payload failed to parse (the latter is swallowed
    *  defensively — never throws at the consumer). */
   return?: unknown;
+  /** Why the run failed, when it did: the module's own error (with its
+   *  trace), the runner's (a context the Studio can't provide, a run that
+   *  failed to start, an oversized return), or the connection's.
+   *  `undefined` for a successful or killed run. */
+  error?: string;
 };

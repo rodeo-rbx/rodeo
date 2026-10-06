@@ -53,7 +53,7 @@ async function daemonRunCode(
       daemon.unregisterStream(streamId);
       const r = (params.result ?? {}) as {
         ok?: boolean; output?: string; exitCode?: number;
-        executionId?: string | null; returnValue?: string | null;
+        executionId?: string | null; returnValue?: string | null; error?: string | null;
       };
       let parsedReturn: unknown = undefined;
       if (typeof r.returnValue === "string" && r.returnValue.length > 0) {
@@ -65,6 +65,7 @@ async function daemonRunCode(
         exitCode: r.exitCode ?? 0,
         executionId: r.executionId ?? undefined,
         return: parsedReturn,
+        error: r.error ?? undefined,
       });
     } else if (m === "stream.error") {
       daemon.unregisterStream(streamId);

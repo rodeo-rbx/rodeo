@@ -1885,6 +1885,7 @@ type _ExecutionDoneFields = {
 	success: boolean,
 	error: string?,
 	returnValue: string?,
+	errorInOutput: boolean,
 }
 
 export type _ExecutionDonePartialFields = {
@@ -1892,6 +1893,7 @@ export type _ExecutionDonePartialFields = {
 	success: boolean?,
 	error: string?,
 	returnValue: string?,
+	errorInOutput: boolean?,
 }
 
 export type ExecutionDone = typeof(setmetatable({} :: _ExecutionDoneFields, {} :: _ExecutionDoneImpl))
@@ -12363,6 +12365,7 @@ do
 			success = if data == nil or data.success == nil then false else data.success,
 			error = if data == nil or data.error == nil then nil else data.error,
 			returnValue = if data == nil or data.returnValue == nil then nil else data.returnValue,
+			errorInOutput = if data == nil or data.errorInOutput == nil then false else data.errorInOutput,
 		}, _ExecutionDoneImpl :: _ExecutionDoneImpl)
 	end
 
@@ -12390,6 +12393,11 @@ do
 			output, cursor = proto.writeString(output, cursor, self.returnValue)
 		end
 
+		if self.errorInOutput then
+			output, cursor = proto.writeTag(output, cursor, 5, proto.wireTypes.varint)
+			output, cursor = proto.writeVarInt(output, cursor, if self.errorInOutput then 1 else 0)
+		end
+
 		local shrunkBuffer = buffer.create(cursor)
 		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
 		return shrunkBuffer
@@ -12408,6 +12416,11 @@ do
 					local value
 					value, cursor = proto.readVarInt(input, cursor)
 					self.success = value ~= 0
+					continue
+				elseif field == 5 then
+					local value
+					value, cursor = proto.readVarInt(input, cursor)
+					self.errorInOutput = value ~= 0
 					continue
 				end
 
@@ -12472,6 +12485,10 @@ do
 			output.returnValue = self.returnValue
 		end
 
+		if self.errorInOutput then
+			output.errorInOutput = self.errorInOutput
+		end
+
 		return output
 	end
 
@@ -12492,6 +12509,10 @@ do
 
 		if input.returnValue ~= nil then
 			self.returnValue = input.returnValue
+		end
+
+		if input.errorInOutput ~= nil then
+			self.errorInOutput = input.errorInOutput
 		end
 
 		return self

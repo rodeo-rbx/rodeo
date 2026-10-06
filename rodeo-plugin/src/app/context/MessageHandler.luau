@@ -55,28 +55,12 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 	end
 
 	-- End a run that failed to start. Without an ExecutionDone the run client
-	-- waits forever (issue #32), and ExecutionDone.error alone reaches no user,
-	-- since no client prints it, so the reason also goes to the run's stderr
-	-- the way the plugin's logger writes there.
+	-- waits forever (issue #32); the client prints its error.
 	local function failRun(executionId: string, err: any)
-		local message = tostring(err)
-		pcall(function()
-			local write = runtimeProto.StreamWriteRequest.new({
-				handle = "stderr",
-				data = `\27[31m[rodeo] run failed to start: {message}\27[0m\n`,
-			})
-			local call = runtimeProto.ClientRpcCall.jsonDecode({
-				id = "",
-				executionId = executionId,
-				streamWrite = write:jsonEncode(),
-			})
-			local rpcMsg = rodeoProto.PluginMessage.new({ msg = { type = "rpc", value = call } })
-			client:Send(HttpService:JSONEncode(rpcMsg:jsonEncode()))
-		end)
 		local done = rodeoProto.ExecutionDone.new({
 			executionId = executionId,
 			success = false,
-			error = message,
+			error = `run failed to start: {err}`,
 		})
 		local msg = rodeoProto.PluginMessage.new({ msg = { type = "done", value = done } })
 		client:Send(HttpService:JSONEncode(msg:jsonEncode()))
@@ -124,6 +108,7 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 						executionId = executionId,
 						success = result and result.success or false,
 						error = result and result.error,
+						errorInOutput = result and result.errorInOutput or false,
 						returnValue = result and result.returnValue,
 					}) },
 				})

@@ -48,6 +48,11 @@ export type RunResult = {
 	-- via bracket notation because `return` is a Luau reserved keyword:
 	-- `result["return"]`.
 	["return"]: any?,
+	-- Why the run failed, when it did: the module's own error (with its
+	-- trace), the runner's (a context the Studio can't provide, a run that
+	-- failed to start, an oversized return), or the connection's. `nil` for
+	-- a successful or killed run.
+	error: string?,
 }
 
 return {}

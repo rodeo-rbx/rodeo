@@ -599,6 +599,8 @@ async fn pump_stream(
                                     // plugin runner). Carried through verbatim;
                                     // clients parse it as `result.return`.
                                     "returnValue": result.return_value,
+                                    // Why the run failed, when it did.
+                                    "error": result.error,
                                 },
                             })).await;
                             break;

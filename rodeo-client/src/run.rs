@@ -61,7 +61,17 @@ pub struct RunResult {
     /// Clients are expected to `JSON.parse` / `json.deserialize` and surface
     /// as `result.return`.
     pub return_value: Option<String>,
+    /// Why the run failed, when it did: the module's own error (with its
+    /// trace), the runner's (a context the Studio can't provide, a run that
+    /// failed to start, an oversized return), or the stream's. `None` for a
+    /// successful or killed run.
+    pub error: Option<String>,
 }
+
+/// The color the plugin's log capture gives Studio's error lines; a run's
+/// error printed here matches them.
+const ERROR_COLOR: &str = "\x1b[1m\x1b[38;2;200;0;0m";
+const RESET: &str = "\x1b[0m";
 
 /// Streaming event emitted by `Dom::run_code_stream`. Mirrors the JSON-RPC
 /// daemon's `stream.data` payload shapes so the daemon can emit these directly.
@@ -102,6 +112,9 @@ async fn run_inner(
     mpsc::UnboundedReceiver<RunStreamEvent>,
     JoinHandle<()>,
 )> {
+    // A run's error is printed with the run's output unless error output is
+    // off (--no-error / --no-output), which also hides Studio's error lines.
+    let print_errors = opts.log_filter.as_ref().is_none_or(|f| f.enable_error);
     let client = transport.run_service();
     let mut bidi = client.run().await
         .map_err(|e| anyhow!("failed to open run stream (is 'rodeo serve' running?): {e}"))?;
@@ -199,7 +212,7 @@ async fn run_inner(
     let profile_dir = opts.profile_dir.clone();
 
     let task = tokio::spawn(async move {
-        message_loop(&mut bidi, profile_dir, event_tx).await;
+        message_loop(&mut bidi, profile_dir, print_errors, event_tx).await;
     });
 
     Ok((event_rx, task))
@@ -249,6 +262,7 @@ pub(crate) async fn run_buffered(
     let mut exit_code = 0;
     let mut ok = true;
     let mut return_value: Option<String> = None;
+    let mut error: Option<String> = None;
     while let Some(ev) = rx.recv().await {
         match ev {
             RunStreamEvent::Created { execution_id: id } => execution_id = Some(id),
@@ -262,13 +276,14 @@ pub(crate) async fn run_buffered(
                 ok = result.ok;
                 for (k, v) in result.files { files.insert(k, v); }
                 return_value = result.return_value;
+                error = result.error;
                 break;
             }
             RunStreamEvent::RpcCall { .. } => {}
         }
     }
     let _ = task.await;
-    Ok(RunResult { execution_id, exit_code, ok, output, files, return_value })
+    Ok(RunResult { execution_id, exit_code, ok, output, files, return_value, error })
 }
 
 /// The bidi message loop — drains incoming events, forwards them as
@@ -277,6 +292,7 @@ pub(crate) async fn run_buffered(
 async fn message_loop(
     bidi: &mut connectrpc::client::BidiStream<hyper::body::Incoming, proto::RunClientMessage, proto::RunEventView<'static>>,
     profile_dir: Option<std::path::PathBuf>,
+    print_errors: bool,
     event_tx: mpsc::UnboundedSender<RunStreamEvent>,
 ) {
     // Master-minted run id, learned from the first stream event (Created).
@@ -305,6 +321,7 @@ async fn message_loop(
     let mut exit_code = 0;
     let mut ok = true;
     let mut return_value: Option<String> = None;
+    let mut run_error: Option<String> = None;
 
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<proto::RunClientMessage>();
 
@@ -375,6 +392,18 @@ async fn message_loop(
                                     while let Ok((kind, bytes)) = capture_rx.try_recv() {
                                         forward_captured(kind, bytes);
                                     }
+                                    // The run's error, after its output. One Studio
+                                    // already logged (the module's own) is in that
+                                    // output, so it isn't printed twice.
+                                    run_error = done.error.clone().filter(|e| !e.is_empty());
+                                    if let Some(err) = run_error.as_deref() {
+                                        if print_errors && !done.error_in_output {
+                                            let _ = event_tx.send(RunStreamEvent::Output {
+                                                kind: runtime::CapturedStreamKind::Stderr,
+                                                chunk: format!("{ERROR_COLOR}{err}{RESET}\n"),
+                                            });
+                                        }
+                                    }
                                 }
                                 proto::run_event::Event::ExecutionKilled(_) => {
                                     // A kill is not an error to the caller — it's just a
@@ -420,6 +449,7 @@ async fn message_loop(
                                             output: String::new(),
                                             files: files_out,
                                             return_value: return_value.take(),
+                                            error: Some(format!("run disconnected: {reason}")),
                                         },
                                     });
                                     break;
@@ -439,6 +469,7 @@ async fn message_loop(
                                             output: String::new(),
                                             files: files_out,
                                             return_value: return_value.take(),
+                                            error: run_error.take(),
                                         },
                                     });
                                     break;
@@ -478,6 +509,7 @@ async fn message_loop(
                             Err(e) => format!("rodeo: run stream failed: {e}\n"),
                             _ => "rodeo: run stream closed before the run completed (the server dropped the connection — an oversized submission exceeds the transport limit)\n".to_string(),
                         };
+                        let error = reason.trim().trim_start_matches("rodeo: ").to_string();
                         let _ = event_tx.send(RunStreamEvent::Output {
                             kind: runtime::CapturedStreamKind::Stderr,
                             chunk: reason,
@@ -491,6 +523,7 @@ async fn message_loop(
                                 output: String::new(),
                                 files: files_out,
                                 return_value: return_value.take(),
+                                error: Some(error),
                             },
                         });
                         break;

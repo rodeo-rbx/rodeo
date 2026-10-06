@@ -101,6 +101,21 @@ local logConnection, outputFileStream = setupLogging(LogService, apis.fs, apis.s
 -- Execute user module
 local context: string = params.context
 
+-- `require` raises only "Requested module experienced an error while
+-- loading" for a module that fails. The engine reports the module's real
+-- error, with its trace, through ScriptContext.Error before require returns,
+-- and logs it, so the log capture above has already put it in the run's
+-- output. The last report for this run's module is its error; any other
+-- failure in here is the runner's own (a context this Studio can't provide,
+-- a failed StudioMCP call), which only the run's error reports.
+local moduleReport: string? = nil
+local moduleReports = game:GetService("ScriptContext").Error:Connect(function(message, trace, source)
+	if source == module then
+		trace = string.gsub(trace, "%s+$", "")
+		moduleReport = if trace ~= "" then `{message}\n{trace}` else message
+	end
+end)
+
 local success, result = xpcall(function()
 	if context == "elevated" then
 		local TestService = game:GetService("TestService")
@@ -135,14 +150,23 @@ local success, result = xpcall(function()
 			if jsonOk then return "__RODEO_ELEVATED_JSON__" .. jsonResult end
 			return tostring(result) -- non-JSON-encodable (Instance, Vector3, etc.) → string fallback
 		]]
-		local r: runtime.McpCallResponse = rpc.call(
+		local called, r: runtime.McpCallResponse = pcall(
+			rpc.call,
 			"mcp_call",
 			runtime.McpCallRequest.new({
 				tool = "execute_luau",
 				argumentsJson = HttpService:JSONEncode({ code = code, datamodel_type = datamodelType }),
 			})
 		)
+		-- Destroyed on failure too: the ref sits in the place's TestService,
+		-- where a save would keep it.
 		ref:Destroy()
+		if not called then
+			-- rpc.call prefixes the backend's reason with its own position and
+			-- the method name; the reason alone is what the user needs.
+			local message = tostring(r)
+			error(string.match(message, "RPC error %[mcp_call%]: (.*)") or message, 0)
+		end
 		if typeof(r.result) == "string" then
 			if string.sub(r.result, 1, 24) == "__RODEO_ELEVATED_ERROR__" then
 				error(string.sub(r.result, 25), 0)
@@ -194,7 +218,19 @@ local success, result = xpcall(function()
 		return slot.result
 	end
 	return require(module)
-end, debug.traceback)
+end, tostring)
+moduleReports:Disconnect()
+
+-- The run's error, and whether the engine already logged it.
+local runError: string? = nil
+local errorInOutput = false
+if not success then
+	if moduleReport ~= nil then
+		runError, errorInOutput = moduleReport, true
+	else
+		runError = tostring(result)
+	end
+end
 
 task.wait(0.2) -- Allow final logs to flush
 logConnection:Disconnect()
@@ -210,7 +246,6 @@ end
 -- stdout writes are size-unbounded: stream.write chunks large payloads.
 
 local returnValueJson: string? = nil
-local capError: string? = nil
 if success and result ~= nil then
 	local isLuauReturnFile = returnFile ~= "" and string.match(returnFile, "%.luau?$") ~= nil
 
@@ -252,16 +287,15 @@ if success and result ~= nil then
 		if #j <= limits.MAX_WIRE_RETURN_BYTES then
 			returnValueJson = j
 		elseif showReturn then
-			-- stdout already carried the full value; just flag the omission.
-			-- ExecutionDone.error is dropped by every client, so stderr is
-			-- the one channel users actually see.
+			-- stdout already carried the full value and the run succeeds; just
+			-- flag the omission.
 			apis.stream.write(
 				apis.io.stderr,
 				"\27[33m" .. sizeMsg .. "; omitted from result.return — use --return <path> to capture it\27[0m\n"
 			)
 		else
-			capError = sizeMsg .. "; write it to a file with --return <path>"
-			apis.stream.write(apis.io.stderr, "\27[31m" .. capError .. "\27[0m\n")
+			success = false
+			runError = sizeMsg .. "; write it to a file with --return <path>"
 		end
 	end
 end
@@ -272,8 +306,9 @@ _G.__rodeo_eid = nil
 _G.__rodeo_procs[executionId] = nil
 
 resultsEvent:Fire({
-	success = success and capError == nil,
-	error = if not success then tostring(result) elseif capError ~= nil then capError else nil,
+	success = success,
+	error = runError,
+	errorInOutput = errorInOutput,
 	returnValue = returnValueJson,
 })
 

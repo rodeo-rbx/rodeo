@@ -96,6 +96,7 @@ local function runViaDaemon(
 				exitCode = r.exitCode or 0,
 				executionId = if type(r.executionId) == "string" then r.executionId else nil,
 				["return"] = parsedReturn,
+				error = if type(r.error) == "string" then r.error else nil,
 			}
 			task.spawn(co)
 		elseif m == "stream.error" then

@@ -109,6 +109,24 @@ fn error_response(eid: &str, rpc_id: &str, message: String) -> proto::runtime_ty
     }
 }
 
+/// The error an elevated run gets when its Studio never shows up in
+/// StudioMCP's Studio list (the reconciliation loop never resolves the DOM's
+/// `mcp_studio_id`). The runner prints it as the run's error, so it names the
+/// Studio, for a user with several open, and what connects one: Studio's
+/// Assistant opens its MCP socket only once its panel has been opened.
+fn no_studio_mcp_message(dom_state: Option<&proto::StudioStateMsg>) -> String {
+    let studio = match dom_state {
+        Some(s) if !s.game_name.is_empty() => format!("Studio {} ({})", s.studio_id, s.game_name),
+        Some(s) if !s.studio_id.is_empty() => format!("Studio {}", s.studio_id),
+        _ => "This Studio".to_string(),
+    };
+    format!(
+        "{studio} has no StudioMCP connection (waited 10 s), and --context elevated runs \
+         through StudioMCP. Open the AI Assistant panel in that Studio with MCP Server \
+         enabled in its settings, or use --context cmdbar (edit DOM of a Studio rodeo launched)."
+    )
+}
+
 /// First server→plugin message. Carries our build id so the plugin can
 /// display a mismatch (the backend enforces it, see the gate below).
 fn welcome_msg() -> proto::ServerMessage {
@@ -456,7 +474,8 @@ async fn dispatch_mcp(
                     break sid;
                 }
                 if attempts >= 20 {
-                    return error_response(&eid, &rpc_id, "Timed out waiting for StudioMCP unification".into());
+                    let dom_state = guard.doms.get(dom_id).and_then(|dom| dom.state.as_ref());
+                    return error_response(&eid, &rpc_id, no_studio_mcp_message(dom_state));
                 }
             }
         }
@@ -471,5 +490,27 @@ async fn dispatch_mcp(
             ..Default::default()
         },
         Err(e) => error_response(&eid, &rpc_id, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_studio_mcp_message_names_the_studio_and_the_setting() {
+        let state = proto::StudioStateMsg {
+            studio_id: "3f9a2c".into(),
+            game_name: "Baseplate".into(),
+            ..Default::default()
+        };
+        let msg = no_studio_mcp_message(Some(&state));
+        assert!(msg.starts_with("Studio 3f9a2c (Baseplate) has no StudioMCP connection"), "{msg}");
+        assert!(msg.contains("--context elevated"), "{msg}");
+        assert!(msg.contains("Open the AI Assistant panel in that Studio with MCP Server enabled"), "{msg}");
+
+        let unnamed = proto::StudioStateMsg { studio_id: "3f9a2c".into(), ..Default::default() };
+        assert!(no_studio_mcp_message(Some(&unnamed)).starts_with("Studio 3f9a2c has no"));
+        assert!(no_studio_mcp_message(None).starts_with("This Studio has no"));
     }
 }

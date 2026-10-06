@@ -669,6 +669,9 @@ message KillCommand {
 message ExecutionDone {
   string execution_id = 1;
   bool success = 2;
+  // Why the run failed: the module's own error as the engine reported it, or
+  // the runner's (a context this Studio can't provide, a run that failed to
+  // start, an oversized return). Clients print it unless error_in_output.
   optional string error = 3;
   // JSON-encoded script return value, carried in-memory over the wire so
   // clients can surface it as `result.return` without round-tripping through
@@ -679,6 +682,9 @@ message ExecutionDone {
   // show_return, print in full to stdout with this field omitted. Return
   // files and stdout stream in chunks and have no size limit.
   optional string return_value = 4;
+  // The engine already logged `error` (the module's own failure), so the
+  // run's output shows it and clients don't print it again.
+  bool error_in_output = 5;
 }
 
 message ExecutionKilled {
