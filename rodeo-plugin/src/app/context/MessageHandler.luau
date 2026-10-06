@@ -293,12 +293,32 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 				})
 			end
 		elseif serverMsg.msg and serverMsg.msg.type == "setTargetMode" then
-			mode_driver.setTarget(serverMsg.msg.value.targetMode)
+			local target = serverMsg.msg.value
+			mode_driver.setTarget(target.targetMode, target.numPlayers)
 		end
 	end)
 
+	-- A transition the edit DOM gave up on goes to the master, which fails
+	-- the runs queued behind it with this reason.
+	local function reportModeFailure(targetMode: string, err: string)
+		local msg = rodeoProto.PluginMessage.new({
+			msg = { type = "modeFailed", value = rodeoProto.ModeTransitionFailed.new({
+				targetMode = targetMode,
+				error = err,
+			}) },
+		})
+		local ok, sendErr = pcall(function()
+			client:Send(HttpService:JSONEncode(msg:jsonEncode()))
+		end)
+		if not ok then
+			warn(`[rodeo] could not report the mode transition failure: {sendErr}`)
+		end
+	end
+	mode_driver.setReporter(reportModeFailure)
+
 	return function()
 		connection:Disconnect()
+		mode_driver.setReporter(nil)
 	end
 end
 

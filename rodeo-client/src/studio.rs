@@ -377,10 +377,14 @@ impl Studio {
         let edit = self.edit_dom.as_ref()
             .ok_or_else(|| anyhow!("start_multiplayer_test requires an open edit Studio"))?;
 
+        // `rodeoSession` tags the session's kind, as the plugin's mode driver
+        // does for the sessions it starts: the play server reads it back
+        // through GetTestArgs, so it knows to end this session for a `test`
+        // target even with no client to report the kind.
         let snippet = format!(
             "local sts = game:GetService(\"StudioTestService\")\n\
              task.spawn(function()\n\
-             \tsts:ExecuteMultiplayerTestAsync({num_players}, {{ rodeo = true }})\n\
+             \tsts:ExecuteMultiplayerTestAsync({num_players}, {{ rodeo = true, rodeoSession = \"play\" }})\n\
              end)\n\
              return \"started\""
         );

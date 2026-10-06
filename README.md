@@ -67,6 +67,7 @@ hello, frank
 | Flags | Runs (mode, DOM, identity) |
 |-------|----------------------------|
 | *(none)* | edit DOM, plugin identity (default) |
+| `--mode edit` | edit DOM, plugin identity, after ending a running run/test/play session |
 | `--context elevated` | edit DOM, command-bar identity (via StudioMCP) |
 | `--context cmdbar` | edit DOM, command-bar identity (via the launch bootstrap; rodeo-launched Studios only, no StudioMCP) |
 | `--mode run --context server` | run mode, server DOM, server identity |

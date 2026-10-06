@@ -67,6 +67,7 @@ type _Messages = {
 	KillResponse: _KillResponseMessage,
 	DisconnectMsg: _DisconnectMsgMessage,
 	PluginMessage: _PluginMessageMessage,
+	ModeTransitionFailed: _ModeTransitionFailedMessage,
 	ServerMessage: _ServerMessageMessage,
 	SetTargetModeMsg: _SetTargetModeMsgMessage,
 	StudioStateMsg: _StudioStateMsgMessage,
@@ -1634,6 +1635,7 @@ type _PluginMessageFields = {
 		| { type: "rpc", value: _runtime.ClientRpcCall }
 		| { type: "done", value: ExecutionDone }
 		| { type: "killed", value: ExecutionKilled }
+		| { type: "modeFailed", value: ModeTransitionFailed }
 	)?,
 }
 
@@ -1643,11 +1645,38 @@ export type _PluginMessagePartialFields = {
 		| { type: "rpc", value: _runtime.ClientRpcCall | _runtime._ClientRpcCallPartialFields }
 		| { type: "done", value: ExecutionDone | _ExecutionDonePartialFields }
 		| { type: "killed", value: ExecutionKilled | _ExecutionKilledPartialFields }
+		| { type: "modeFailed", value: ModeTransitionFailed | _ModeTransitionFailedPartialFields }
 	)?,
 }
 
 export type PluginMessage = typeof(setmetatable({} :: _PluginMessageFields, {} :: _PluginMessageImpl))
 type _PluginMessageMessage = proto.Message<PluginMessage, _PluginMessagePartialFields>
+
+type _ModeTransitionFailedImpl = {
+	__index: _ModeTransitionFailedImpl,
+	new: (fields: _ModeTransitionFailedPartialFields?) -> ModeTransitionFailed,
+	encode: (self: ModeTransitionFailed) -> buffer,
+	decode: (input: buffer) -> ModeTransitionFailed,
+	jsonEncode: (self: ModeTransitionFailed) -> { [string]: any },
+	jsonDecode: (input: { [string]: any }) -> ModeTransitionFailed,
+	descriptor: proto.Descriptor,
+}
+
+type _ModeTransitionFailedFields = {
+	targetMode: string,
+	error: string,
+}
+
+export type _ModeTransitionFailedPartialFields = {
+	targetMode: string?,
+	error: string?,
+}
+
+export type ModeTransitionFailed = typeof(setmetatable(
+	{} :: _ModeTransitionFailedFields,
+	{} :: _ModeTransitionFailedImpl
+))
+type _ModeTransitionFailedMessage = proto.Message<ModeTransitionFailed, _ModeTransitionFailedPartialFields>
 
 type _ServerMessageImpl = {
 	__index: _ServerMessageImpl,
@@ -1696,10 +1725,12 @@ type _SetTargetModeMsgImpl = {
 
 type _SetTargetModeMsgFields = {
 	targetMode: string,
+	numPlayers: number,
 }
 
 export type _SetTargetModeMsgPartialFields = {
 	targetMode: string?,
+	numPlayers: number?,
 }
 
 export type SetTargetModeMsg = typeof(setmetatable({} :: _SetTargetModeMsgFields, {} :: _SetTargetModeMsgImpl))
@@ -10817,6 +10848,15 @@ do
 					and getmetatable((v :: any).value) == nil
 				then
 					return { type = (v :: any).type, value = messages.ExecutionKilled.new((v :: any).value) } :: any
+				elseif
+					(v :: any).type == "modeFailed"
+					and (v :: any).value ~= nil
+					and getmetatable((v :: any).value) == nil
+				then
+					return {
+							type = (v :: any).type,
+							value = messages.ModeTransitionFailed.new((v :: any).value),
+						} :: any
 				end
 				return v :: any
 			end)(),
@@ -10843,6 +10883,10 @@ do
 			elseif self.msg.type == "killed" then
 				local encoded = self.msg.value:encode()
 				output, cursor = proto.writeTag(output, cursor, 4, proto.wireTypes.lengthDelimited)
+				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
+			elseif self.msg.type == "modeFailed" then
+				local encoded = self.msg.value:encode()
+				output, cursor = proto.writeTag(output, cursor, 5, proto.wireTypes.lengthDelimited)
 				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
 			end
 		end
@@ -10886,6 +10930,11 @@ do
 					value, cursor = proto.readBuffer(input, cursor)
 					self.msg = { type = "killed", value = messages.ExecutionKilled.decode(value) }
 					continue
+				elseif field == 5 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.msg = { type = "modeFailed", value = messages.ModeTransitionFailed.decode(value) }
+					continue
 				end
 
 				local length
@@ -10922,6 +10971,8 @@ do
 				output.done = self.msg.value:jsonEncode()
 			elseif self.msg.type == "killed" then
 				output.killed = self.msg.value:jsonEncode()
+			elseif self.msg.type == "modeFailed" then
+				output.modeFailed = self.msg.value:jsonEncode()
 			end
 		end
 
@@ -10947,6 +10998,10 @@ do
 			self.msg = { type = "killed", value = messages.ExecutionKilled.jsonDecode(input.killed) }
 		end
 
+		if input.modeFailed ~= nil then
+			self.msg = { type = "modeFailed", value = messages.ModeTransitionFailed.jsonDecode(input.modeFailed) }
+		end
+
 		return self
 	end
 
@@ -10958,6 +11013,122 @@ do
 	messages.PluginMessage = _PluginMessageImpl :: any -- Luau: Not sure why this intersection fails.
 
 	typeRegistry.default:register(messages.PluginMessage)
+end
+
+do
+	local _ModeTransitionFailedImpl = {}
+	_ModeTransitionFailedImpl.__index = _ModeTransitionFailedImpl
+
+	function _ModeTransitionFailedImpl.new(data: _ModeTransitionFailedPartialFields?): ModeTransitionFailed
+		return setmetatable({
+			targetMode = if data == nil or data.targetMode == nil then "" else data.targetMode,
+			error = if data == nil or data.error == nil then "" else data.error,
+		}, _ModeTransitionFailedImpl :: _ModeTransitionFailedImpl)
+	end
+
+	function _ModeTransitionFailedImpl.encode(self: ModeTransitionFailed): buffer
+		local output = buffer.create(0)
+		local cursor = 0
+
+		if self.targetMode ~= nil and self.targetMode ~= "" then
+			output, cursor = proto.writeTag(output, cursor, 1, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.targetMode)
+		end
+
+		if self.error ~= nil and self.error ~= "" then
+			output, cursor = proto.writeTag(output, cursor, 2, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.error)
+		end
+
+		local shrunkBuffer = buffer.create(cursor)
+		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
+		return shrunkBuffer
+	end
+
+	function _ModeTransitionFailedImpl.decode(input: buffer): ModeTransitionFailed
+		local self = _ModeTransitionFailedImpl.new()
+		local cursor = 0
+
+		while cursor < buffer.len(input) do
+			local field, wireType
+			field, wireType, cursor = proto.readTag(input, cursor)
+
+			if wireType == proto.wireTypes.varint then
+				-- No fields
+
+				local _
+				_, cursor = proto.readVarInt(input, cursor)
+			elseif wireType == proto.wireTypes.lengthDelimited then
+				if field == 1 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.targetMode = proto.decodeString(value)
+					continue
+				elseif field == 2 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.error = proto.decodeString(value)
+					continue
+				end
+
+				local length
+				length, cursor = proto.readVarInt(input, cursor)
+
+				cursor += length
+			elseif wireType == proto.wireTypes.i32 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed32(input, cursor)
+			elseif wireType == proto.wireTypes.i64 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed64(input, cursor)
+			else
+				error("Unsupported wire type: " .. wireType)
+			end
+		end
+
+		return self
+	end
+
+	function _ModeTransitionFailedImpl.jsonEncode(self: ModeTransitionFailed): any
+		local output = {}
+
+		if self.targetMode ~= nil and self.targetMode ~= "" then
+			output.targetMode = self.targetMode
+		end
+
+		if self.error ~= nil and self.error ~= "" then
+			output.error = self.error
+		end
+
+		return output
+	end
+
+	function _ModeTransitionFailedImpl.jsonDecode(input: { [string]: any }): ModeTransitionFailed
+		local self = _ModeTransitionFailedImpl.new()
+
+		if input.targetMode ~= nil then
+			self.targetMode = input.targetMode
+		end
+
+		if input.error ~= nil then
+			self.error = input.error
+		end
+
+		return self
+	end
+
+	_ModeTransitionFailedImpl.descriptor = {
+		name = "ModeTransitionFailed",
+		fullName = "rodeo.ModeTransitionFailed",
+	}
+
+	messages.ModeTransitionFailed = _ModeTransitionFailedImpl :: any -- Luau: Not sure why this intersection fails.
+
+	typeRegistry.default:register(messages.ModeTransitionFailed)
 end
 
 do
@@ -11187,6 +11358,7 @@ do
 	function _SetTargetModeMsgImpl.new(data: _SetTargetModeMsgPartialFields?): SetTargetModeMsg
 		return setmetatable({
 			targetMode = if data == nil or data.targetMode == nil then "" else data.targetMode,
+			numPlayers = if data == nil or data.numPlayers == nil then 0 else data.numPlayers,
 		}, _SetTargetModeMsgImpl :: _SetTargetModeMsgImpl)
 	end
 
@@ -11197,6 +11369,11 @@ do
 		if self.targetMode ~= nil and self.targetMode ~= "" then
 			output, cursor = proto.writeTag(output, cursor, 1, proto.wireTypes.lengthDelimited)
 			output, cursor = proto.writeString(output, cursor, self.targetMode)
+		end
+
+		if self.numPlayers ~= nil and self.numPlayers ~= 0 then
+			output, cursor = proto.writeTag(output, cursor, 2, proto.wireTypes.varint)
+			output, cursor = proto.writeVarInt(output, cursor, self.numPlayers)
 		end
 
 		local shrunkBuffer = buffer.create(cursor)
@@ -11213,7 +11390,12 @@ do
 			field, wireType, cursor = proto.readTag(input, cursor)
 
 			if wireType == proto.wireTypes.varint then
-				-- No fields
+				if field == 2 then
+					local value
+					value, cursor = proto.readVarIntU32(input, cursor)
+					self.numPlayers = value
+					continue
+				end
 
 				local _
 				_, cursor = proto.readVarInt(input, cursor)
@@ -11254,6 +11436,10 @@ do
 			output.targetMode = self.targetMode
 		end
 
+		if self.numPlayers ~= nil and self.numPlayers ~= 0 then
+			output.numPlayers = self.numPlayers
+		end
+
 		return output
 	end
 
@@ -11262,6 +11448,10 @@ do
 
 		if input.targetMode ~= nil then
 			self.targetMode = input.targetMode
+		end
+
+		if input.numPlayers ~= nil then
+			self.numPlayers = input.numPlayers
 		end
 
 		return self
@@ -12751,6 +12941,7 @@ return {
 	KillResponse = messages.KillResponse,
 	DisconnectMsg = messages.DisconnectMsg,
 	PluginMessage = messages.PluginMessage,
+	ModeTransitionFailed = messages.ModeTransitionFailed,
 	ServerMessage = messages.ServerMessage,
 	SetTargetModeMsg = messages.SetTargetModeMsg,
 	StudioStateMsg = messages.StudioStateMsg,

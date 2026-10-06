@@ -1,173 +1,176 @@
 --!strict
 --[[
-	mode_driver.luau — plugin-side convergence loop. Backend broadcasts
-	target_mode to every DOM in a studio; each plugin retries its role-
-	appropriate action in a loop until its own mode satisfies the target
-	(or a new target arrives and supersedes this one).
+	mode_driver.luau — plugin-side convergence loop. The master sends every
+	DOM of a studio its target mode (SetTargetModeMsg); each DOM does its part
+	until the target is superseded:
 
-	Role dispatch:
-	- Edit DOM (IsEdit) enters a session: ExecuteRunModeAsync / ExecutePlayModeAsync.
-	- Server DOM (IsServer, not edit) exits: EndTest.
+	- Server DOM (IsServer, not edit) ends a session that doesn't satisfy the
+	  target: EndTest. That includes switching session kinds (run <-> test <->
+	  play) and target "edit".
+	- Edit DOM (IsEdit) starts the target's session once the engine is idle:
+	  ExecuteRunModeAsync / ExecutePlayModeAsync / ExecuteMultiplayerTestAsync.
+	  When it can't — the engine keeps refusing, or the studio never gets
+	  there — it gives up and reports why (ModeTransitionFailed), so the
+	  master fails the runs waiting on the transition instead of leaving them
+	  queued forever.
 	- Client DOMs: no-op.
 
-	Each setTarget bumps a token; the running loop checks the token each
-	iteration and exits if the target was superseded.
+	The decisions live in mode_policy.luau (pure, unit-tested under lune).
 ]]
 
 local RunService = game:GetService("RunService")
 local StudioTestService = game:GetService("StudioTestService")
 
+local mode_policy = require(script.Parent.mode_policy)
 local studio = require(script.Parent.studio)
 
 local isEdit = RunService:IsEdit()
 local isServer = RunService:IsServer()
 
-local RETRY_INTERVAL = 1
+local POLL_INTERVAL = 0.25
+-- Pause between EndTest attempts while the session is still up.
+local END_RETRY_INTERVAL = 1
 
-local currentTarget: string? = nil
+local currentTarget = ""
+local currentPlayers = 0
 local token = 0
+-- The edit DOM reported a failure for currentTarget and stopped.
+local gaveUp = false
 
-local function matches(ownMode: string, target: string): boolean
-	if target == ownMode then
-		return true
+export type Reporter = (targetMode: string, err: string) -> ()
+local reporter: Reporter? = nil
+
+-- A session start of ours that hasn't returned. A successful Execute*Async
+-- yields for the whole lifetime of the session it started and returns when
+-- that session ends, so this stays set while the session is up. It is module
+-- state, not per-target: the call belongs to the session, which outlives the
+-- target that started it. (It used to be cleared on every new target, so a
+-- re-sent target fired a second start onto the live session.)
+local startPending = false
+local endPending = false
+
+-- StudioTestService.EditModeActive is undocumented: true while Studio can
+-- start a session, false while one runs or tears down. nil if unreadable.
+local function readEditModeActive(): boolean?
+	local ok, value = pcall(function()
+		return (StudioTestService :: any).EditModeActive
+	end)
+	if ok and type(value) == "boolean" then
+		return value
 	end
-	-- test vs play is a post-hoc MCP-reconciliation distinction; both satisfy
-	-- either target since Studio itself has entered the same play DataModel.
-	if (target == "test" or target == "play") and (ownMode == "test" or ownMode == "play") then
-		return true
-	end
-	return false
+	return nil
 end
 
--- Whether this plugin still has work to do for the current target.
-local function needsAction(): boolean
-	local target = currentTarget
-	if target == nil or target == "" then
-		return false
-	end
-	if isEdit then
-		-- Edit DOM always reports mode="edit". If target is anything other than
-		-- edit, we need to fire the enter script. If the studio happens to
-		-- already be in that mode, Roblox will reject the call and pcall
-		-- swallows — harmless spin.
-		return target ~= "edit"
-	end
-	if isServer then
-		local state = studio.getState()
-		if not state then
-			return false
-		end
-		return not matches(state.mode, target)
-	end
-	return false
+-- Test args tag the sessions rodeo starts with their kind, so a play server
+-- knows it is a solo test or a multiplayer test before any client reports
+-- (studio.luau reads them back through GetTestArgs).
+local function sessionArgs(kind: string): { [string]: any }
+	return { rodeo = true, rodeoSession = kind }
 end
 
--- One session call in flight at a time.
---
--- Execute*ModeAsync does NOT error when a session is already running: during a
--- run session it BLOCKS, and only resolves (into nothing) once that session
--- ends. So a run->play transition — the one transition needing both an end and
--- a start — used to stack one blocked start per retry against the server DOM's
--- concurrent EndTest, until a session was half-started and immediately killed.
--- That leaves StudioTestService believing a test is in progress with no server
--- DataModel left to EndTest it: the studio can never enter play again.
---
--- Serialized, the transition sequences itself: the first start blocks, EndTest
--- tears the old session down, the blocked call is discarded, and the next retry
--- starts cleanly against an idle studio.
-local inFlight = false
-
-local function spawnCall(what: string, fn, ...)
-	if inFlight then
-		return
-	end
-	inFlight = true
-	local args = table.pack(...)
+local function startSession(target: string, numPlayers: number, onError: (string) -> ())
+	startPending = true
 	task.spawn(function()
-		local ok, err = pcall(fn, table.unpack(args, 1, args.n))
-		inFlight = false
+		local sts = StudioTestService :: any
+		local ok, err = pcall(function()
+			if target == "run" then
+				sts:ExecuteRunModeAsync(sessionArgs("run"))
+			elseif target == "test" then
+				sts:ExecutePlayModeAsync(sessionArgs("test"))
+			else
+				sts:ExecuteMultiplayerTestAsync(numPlayers, sessionArgs("play"))
+			end
+		end)
+		startPending = false
 		if not ok then
-			-- Never swallow: this failure mode was invisible for exactly this
-			-- reason, and the retry loop hides transient errors anyway.
-			warn(`[rodeo] mode_driver {what} failed: {err}`)
+			local msg = tostring(err)
+			warn(`[rodeo] mode_driver StudioTestService:{mode_policy.START_API[target]} failed: {msg}`)
+			onError(msg)
 		end
 	end)
 end
 
-local function fire()
-	local target = currentTarget
-	if target == nil or target == "" then
+local function editLoop(myToken: number, target: string, numPlayers: number)
+	local state = mode_policy.newEdit(target, os.clock())
+	while token == myToken do
+		local action, reason = mode_policy.stepEdit(state, {
+			now = os.clock(),
+			editModeActive = readEditModeActive(),
+			startPending = startPending,
+		})
+		if action == "start" then
+			startSession(target, numPlayers, function(err)
+				-- The error belongs to this target's attempt only.
+				if token == myToken then
+					mode_policy.noteStartError(state, err)
+				end
+			end)
+		elseif action == "fail" then
+			gaveUp = true
+			local msg = reason or "unknown failure"
+			warn(`[rodeo] mode_driver could not enter {target} mode: {msg}`)
+			local report = reporter
+			if report then
+				report(target, msg)
+			end
+			return
+		end
+		task.wait(POLL_INTERVAL)
+	end
+end
+
+local function serverLoop(myToken: number, target: string)
+	while token == myToken do
+		local kind: mode_policy.SessionKind? = if RunService:IsRunMode() then "run" else studio.getSessionKind()
+		if not endPending and mode_policy.serverShouldEnd(target, kind) then
+			endPending = true
+			task.spawn(function()
+				local ok, err = pcall(function()
+					StudioTestService:EndTest("end_test")
+				end)
+				if not ok then
+					warn(`[rodeo] mode_driver StudioTestService:EndTest failed: {err}`)
+				end
+				task.wait(END_RETRY_INTERVAL)
+				endPending = false
+			end)
+		end
+		task.wait(POLL_INTERVAL)
+	end
+end
+
+local function setTarget(target: string?, numPlayers: number?)
+	local t = target or ""
+	local n = numPlayers or 0
+	-- The master re-sends an unchanged target whenever the studio's DOM set
+	-- changes (that is how a newly connected DOM learns it). Restarting here
+	-- used to reset the in-flight guard and stack a second start onto a live
+	-- session. A target the edit DOM gave up on is the exception: the master
+	-- answers a failure report by clearing the target, so the same target
+	-- arriving again means the report was lost (reconnect) or crossed this
+	-- message, and the queued runs need a fresh attempt.
+	if t == currentTarget and n == currentPlayers and not gaveUp then
+		return
+	end
+	currentTarget, currentPlayers, gaveUp = t, n, false
+	token += 1
+	if t == "" then
 		return
 	end
 	if isEdit then
-		if target == "run" then
-			spawnCall("ExecuteRunModeAsync", StudioTestService.ExecuteRunModeAsync, StudioTestService, true)
-		elseif target == "test" or target == "play" then
-			spawnCall("ExecutePlayModeAsync", StudioTestService.ExecutePlayModeAsync, StudioTestService, true)
-		end
+		task.spawn(editLoop, token, t, n)
 	elseif isServer then
-		spawnCall("EndTest", StudioTestService.EndTest, StudioTestService, "end_test")
+		task.spawn(serverLoop, token, t)
 	end
 end
 
--- TEMPORARY WORKAROUND for a Studio engine bug — remove once Roblox fixes it.
---
--- The bug: StudioTestService:ExecutePlayModeAsync fired at the instant a
--- previous session is tearing down NEVER RETURNS and never starts play. It
--- does not error, does not time out, does not queue — the call is simply lost,
--- and the studio is left unable to enter play mode until it is restarted.
--- Measured on Studio 0.734.0.7340915 with a controlled 2x2, fresh studio per
--- trial:
---
---   teardown + 1s, no prior failed call  -> play starts
---   teardown + 1s, prior failed call     -> play starts
---   teardown + 0s                        -> blocks forever, no session (n=2)
---
--- Timing is the only variable. rodeo hits it every time because the master
--- re-pushes the target the moment the server DOM disconnects, which is exactly
--- that instant, so run<->play transitions hung ~60s and bricked the studio.
---
--- The workaround: the edit DOM waits before its FIRST start attempt for a
--- target, so the call lands after teardown settles. The server DOM's EndTest
--- has no such hazard and still fires immediately. Cost: ~1s added to every
--- transition that starts a session.
---
--- To check whether Roblox has fixed it: enter run mode, call EndTest from the
--- server DataModel, and immediately (no delay) call ExecutePlayModeAsync from
--- the edit DataModel. If play mode starts, the bug is gone — delete
--- SETTLE_BEFORE_START and the `first and isEdit` branch in loop() below. The
--- in-flight guard above is worth keeping regardless: it is ordinary hygiene
--- for an async call that blocks rather than erroring while a session is live.
-local SETTLE_BEFORE_START = 1
-
-local function loop(myToken: number)
-	local first = true
-	while token == myToken and needsAction() do
-		if first and isEdit then
-			task.wait(SETTLE_BEFORE_START)
-			if token ~= myToken or not needsAction() then
-				return
-			end
-		end
-		first = false
-		fire()
-		task.wait(RETRY_INTERVAL)
-	end
-end
-
-local function setTarget(target: string?)
-	currentTarget = target
-	token += 1
-	-- A *successful* Execute*ModeAsync also blocks — it yields for the whole
-	-- lifetime of the session it started — so the in-flight flag would stay set
-	-- for as long as the studio is in that mode. A new target means a genuinely
-	-- new attempt is warranted, so release it here; otherwise the next
-	-- transition would find this DOM permanently guarded.
-	inFlight = false
-	local myToken = token
-	task.spawn(loop, myToken)
+-- Where the edit DOM sends a transition failure: the current connection's
+-- send, or nil while disconnected.
+local function setReporter(fn: Reporter?)
+	reporter = fn
 end
 
 return {
 	setTarget = setTarget,
+	setReporter = setReporter,
 }

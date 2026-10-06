@@ -108,9 +108,12 @@ pub enum Commands {
         #[arg(long)]
         show_return: bool,
 
-        /// Studio mode to run in (auto-transitions Studio). Defaults to edit;
-        /// never inferred from --context/--dom, so a server/client run must pass
-        /// --mode explicitly (e.g. --mode run --context server).
+        /// Studio mode to run in (auto-transitions Studio, ending a running
+        /// session of another kind first). Defaults to edit; never inferred from
+        /// --context/--dom, so a server/client run must pass --mode explicitly
+        /// (e.g. --mode run --context server). An explicit --mode edit ends a
+        /// running session first; omit --mode (e.g. --dom edit) to leave it
+        /// running.
         #[arg(long, value_enum, help_heading = "Targeting")]
         mode: Option<ModeArg>,
 

@@ -85,7 +85,7 @@ Run a script in Studio.
 
 - `<script>` — path to script, or `-` for stdin. Any name without a `.` resolves to `.rodeo/<name>.luau` when that file exists — nested paths included (`rodeo run tests/smoke` → `.rodeo/tests/smoke.luau`)
 - `-s` / `--source <code>` — execute inline source code
-- `--mode edit|run|test|play` — Studio mode (auto-transitions; the only flag that does). Defaults to edit; never inferred from --context/--dom, so a server/client run must pass --mode
+- `--mode edit|run|test|play` — Studio mode (auto-transitions, ending a running session of another kind first; the only flag that does). Defaults to edit; never inferred from --context/--dom, so a server/client run must pass --mode. An explicit `--mode edit` ends a running session; omitting `--mode` leaves it running
 - `--context plugin|server|client|elevated|cmdbar` — the identity level to run at: plugin, server-runtime identity, client-runtime identity, command bar via StudioMCP (elevated), or command bar via the launch bootstrap's bridge (cmdbar; edit DOM of a rodeo-launched Studio only). Not a script class
 - `--dom edit|server|client` — which DOM (usually inferred); `edit` targets the edit DOM even while a test/play session runs
 - `--studio-id <id>` — scope routing to one studio (id from `rodeo state`; unique prefix ok)
@@ -205,6 +205,7 @@ Read each row as (studio mode, which DOM, at which identity):
 | Flags | Runs |
 |-------|------|
 | *(none)* | edit DOM, plugin identity (default) |
+| `--mode edit` | edit DOM, plugin identity, after ending a running run/test/play session |
 | `--context elevated` | edit DOM, command-bar identity (via StudioMCP) |
 | `--context cmdbar` | edit DOM, command-bar identity (via the launch bootstrap; no StudioMCP) |
 | `--mode run --context server` | run mode, server DOM, server identity |
@@ -623,7 +624,7 @@ Patterns that pay off when you use rodeo to reproduce a bug and prove a fix:
 
 ## Gotchas
 
-- `--mode run|test|play` when the studio isn't already in that mode → auto-transitions
+- `--mode run|test|play` when the studio isn't already in that mode → auto-transitions, ending the current session first (run ↔ test ↔ play); `--mode edit` ends it without starting another. If Studio refuses the transition, the queued runs fail (exit 2, `rodeo: run disconnected: Studio <id> could not enter <mode> mode: <reason>`) instead of waiting forever
 - `--context elevated` requires Studio's AI assistant / StudioMCP to be available — rodeo bridges to elevated identity through it
 - **`--context elevated` can hang ~10s and fail if the Studio never connected to StudioMCP** — the Assistant plugin only opens its MCP socket when the Assistant panel is opened, and `mcp-server.enabled=true` alone doesn't guarantee it (github.com/revvy02/rodeo issue #4). Recovery: open the AI Assistant panel in that Studio, or use `--context cmdbar` for edit-DOM work
 - `--context cmdbar` needs a Studio that rodeo launched (`--place`, or a serve-launched Studio): the launch bootstrap installs its bridge. A hand-opened Studio fails immediately with a message saying so

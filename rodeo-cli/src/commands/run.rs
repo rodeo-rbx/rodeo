@@ -138,11 +138,12 @@ async fn persistent_mode(args: RunArgs) -> Result<()> {
 
     if is_play {
         let resolved = resolved.expect("is_play implies a resolved route");
-        let mut play_handles = launch_play_processes(
+        launch_play_processes(
             &host,
             port,
             &resolved,
             place_target.as_ref(),
+            None,
             !args.place.focus,
             &args.fflags,
             args.place.show_widgets.clone(),
@@ -152,7 +153,6 @@ async fn persistent_mode(args: RunArgs) -> Result<()> {
         if let Some(handle) = owned {
             tracing::info!("Play mode running on port {port}. Press Ctrl-C to stop.");
             handle.wait_for_shutdown().await;
-            play_handles.cleanup();
         }
     } else if let Some(target) = place_target {
         let req = build_launch_request(&target, !args.place.focus, args.place.save, args.fflags, args.place.detached, args.place.show_widgets.clone(), args.place.profile.is_some(), &host, port).await?;
@@ -341,29 +341,36 @@ async fn ensure_serve(cfg: &RunConfig) -> Result<Option<super::serve::ServeHandl
 /// Connect to (or launch) the server and execute the script.
 async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
     let mut serve_handle: Option<super::serve::ServeHandle> = None;
-    let mut _play_handles: Option<PlayHandles> = None;
     let mut launched_studio_id: Option<String> = None;
+    // The studio the play path prepared the session in; the run is pinned to
+    // it so it lands in that session, not another studio's.
+    let mut play_studio: Option<String> = None;
 
     if cfg.is_play() {
         // Play mode: ensure the session + requested client(s) exist.
         // NOTE: we do NOT gate on cfg.should_launch — `should_launch` is only
         // true when --place was provided, but `rodeo run --mode play
-        // --dom client --clients N -s 'code'` against an already-running
-        // play server must still spawn the client.
+        // --dom client -s 'code'` against an already-running play server must
+        // still spawn the client.
         serve_handle = ensure_serve(&cfg).await?;
 
+        let studio_id = match cfg.studio_id.as_deref() {
+            Some(prefix) => Some(resolve_studio_id(&cfg.host, cfg.port, prefix).await?),
+            None => None,
+        };
         let resolved = cfg.resolved()?.expect("is_play implies a resolved route");
-        _play_handles = Some(launch_play_processes(
+        play_studio = launch_play_processes(
             &cfg.host,
             cfg.port,
             &resolved,
             cfg.place_target.as_ref(),
+            studio_id.as_deref(),
             !cfg.focus,
             &cfg.fflags,
             cfg.show_widgets.clone(),
             cfg.profile.is_some(),
         )
-        .await?);
+        .await?;
     } else if cfg.place_target.is_some() {
         // `--place` guarantees the place is opened: launch a Studio for it
         // whether or not a serve already exists on the port. No serve →
@@ -426,10 +433,11 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         None => None,
     };
     // Session pin priority: an explicit --studio-id, else the studio we just
-    // launched (so `run --place` executes in THIS place).
+    // launched (so `run --place` executes in THIS place), else the studio
+    // the play path prepared.
     let session = match cfg.studio_id.as_deref() {
         Some(prefix) => Some(resolve_studio_id(&cfg.host, cfg.port, prefix).await?),
-        None => launched_studio_id.clone(),
+        None => launched_studio_id.clone().or(play_studio),
     };
 
     let is_profiling = cfg.profile.is_some();
@@ -595,72 +603,77 @@ pub(crate) async fn build_launch_request(
     })
 }
 
-/// Placeholder retained for the play call sites. Multiplayer-test DOMs are now
-/// owned by the studio backend (the edit Studio hosts the in-Studio test via
-/// `StudioTestService:ExecuteMultiplayerTestAsync`), so the CLI holds no process
-/// handles to clean up.
-#[derive(Default)]
-pub struct PlayHandles;
-
-impl PlayHandles {
-    pub fn cleanup(&mut self) {}
-}
-
+/// Prepare the multiplayer test a `--mode play` run needs. Returns the studio
+/// the run should be pinned to (its launch session or studio id), if one was
+/// chosen here.
+///
+/// - A studio already in a multiplayer test (`studio_id`'s when given, else
+///   the first one): `--dom client` appends one more client via AddPlayers
+///   on its server.
+/// - Else, with `--place`: open the place and start a multiplayer test on it,
+///   with one client for `--dom client`, else none.
+/// - Else (the studio is in edit, run, or a solo `--mode test`): nothing to do
+///   here. The queued play run makes the master end that session and start a
+///   multiplayer test, with the client the run needs.
 async fn launch_play_processes(
     host: &str,
     port: u16,
     route: &crate::shared::target::Resolved,
     place: Option<&crate::studio_backend::PlaceTarget>,
+    studio_id: Option<&str>,
     background: bool,
     fflags: &crate::cli::FflagArgs,
     show_widgets: Option<String>,
     profile: bool,
-) -> Result<PlayHandles> {
+) -> Result<Option<String>> {
     use crate::shared::target::DomKind;
     use crate::studio_backend::PlaceTarget;
     use rodeo_client::studio::{OpenOpts, OpenFileOpts, OpenPlaceOpts};
 
-    let _ = port;
     let client = RodeoClient::connect(host, port)?;
 
     let want_client = matches!(route.dom_kind, DomKind::Client);
 
-    // Existing play session? (a studio that already has a server DOM)
-    let snapshot = client.get_state().await.ok();
-    let server_studio = snapshot.as_ref().and_then(|s| {
-        s.studios.iter().find(|st| st.doms.iter().any(|v| v.dom_kind == "server")).cloned()
-    });
+    // A running multiplayer test. Only studio_mode "play" is one: a solo
+    // `--mode test` session also has a server DOM, but AddPlayers can't grow
+    // it, and a play run never routes to it (#39).
+    let snapshot = client.get_state().await?;
+    let play_studio = snapshot.studios.iter()
+        .find(|st| st.studio_mode == "play" && studio_id.map_or(true, |id| st.studio_id == id))
+        .cloned();
 
-    if let Some(st) = server_studio {
-        // A multiplayer test is already running:
-        //   --dom client  => append one more client (via AddPlayers on the server)
-        //   --dom server  => leave the session as-is
-        let current = st.doms.iter().filter(|v| v.dom_kind == "client").count() as u32;
-        let target_total = if want_client { current + 1 } else { current };
-        if target_total > current {
-            let add = target_total - current;
-            tracing::info!(add, current, target_total, "growing play session via AddPlayers");
-            client.submit_run(rodeo_client::RunCodeOpts {
-                source: format!("game:GetService(\"StudioTestService\"):AddPlayers({add})\nreturn true"),
+    if let Some(st) = play_studio {
+        // --dom client => append one more client (via AddPlayers on the server)
+        // --dom server => leave the session as-is
+        if want_client {
+            let current = st.doms.iter().filter(|v| v.dom_kind == "client").count() as u32;
+            tracing::info!(current, "growing play session via AddPlayers");
+            // Pinned to this studio: unpinned, it could land in another
+            // studio's play server, or queue for one that never comes.
+            let added = client.submit_run(rodeo_client::RunCodeOpts {
+                source: "game:GetService(\"StudioTestService\"):AddPlayers(1)\nreturn true".to_string(),
                 mode: Some("play".to_string()),
                 context: Some("server".to_string()),
+                session: Some(st.studio_id.clone()),
                 ..Default::default()
             }).await.context("AddPlayers run failed")?;
+            if !added.ok {
+                bail!("AddPlayers failed on studio {}: {}", st.studio_id, added.output.trim());
+            }
+            wait_for_play_session(&client, &st.studio_id, current + 1).await?;
         }
-        wait_for_play_session(&client, target_total).await?;
-        return Ok(PlayHandles);
+        return Ok(Some(st.studio_id));
     }
 
-    // No play session yet. Fresh test starts with one client (client dom) or
-    // none (server dom); more clients are added one at a time via later runs.
-    let initial_clients: u32 = if want_client { 1 } else { 0 };
-
-    // We need a place to open the edit Studio that will host the test.
+    // No multiplayer test here. Without a place to open, the queued run
+    // drives the transition (see the doc comment).
     let Some(place) = place else {
-        tracing::info!("waiting for play DOMs to connect...");
-        wait_for_play_session(&client, initial_clients).await?;
-        return Ok(PlayHandles);
+        return Ok(studio_id.map(str::to_string));
     };
+
+    // Fresh test starts with one client (client dom) or none (server dom);
+    // more clients are added one at a time via later runs.
+    let initial_clients: u32 = if want_client { 1 } else { 0 };
 
     // Open the edit Studio (profile=true so the multiplayer-test child
     // DataModels inherit the profiler FFlags), then start the in-Studio test.
@@ -693,17 +706,18 @@ async fn launch_play_processes(
         .context("failed to start multiplayer test")?;
     tracing::info!("multiplayer test started");
 
-    Ok(PlayHandles)
+    Ok(Some(studio.session_guid.clone()))
 }
 
-/// Poll the studio-first state until a play session (a studio with a server DOM
-/// and at least `clients` client DOMs) is present.
-async fn wait_for_play_session(client: &RodeoClient, clients: u32) -> Result<()> {
+/// Poll the studio-first state until `studio_id`'s multiplayer test has at
+/// least `clients` client DOMs.
+async fn wait_for_play_session(client: &RodeoClient, studio_id: &str, clients: u32) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if let Ok(state) = client.get_state().await {
             let ready = state.studios.iter().any(|st| {
-                st.doms.iter().any(|v| v.dom_kind == "server")
+                st.studio_id == studio_id
+                    && st.studio_mode == "play"
                     && st.doms.iter().filter(|v| v.dom_kind == "client").count() as u32 >= clients
             });
             if ready {
@@ -711,7 +725,7 @@ async fn wait_for_play_session(client: &RodeoClient, clients: u32) -> Result<()>
             }
         }
         if std::time::Instant::now() >= deadline {
-            bail!("timed out waiting for play session (server + {clients} clients)");
+            bail!("timed out waiting for studio {studio_id}'s play session to have {clients} clients");
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }

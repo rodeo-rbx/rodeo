@@ -61,7 +61,7 @@ Run a script in Studio
 * `--output <OUTPUT>` — Path to file for execution output (prints/logs)
 * `--return <RETURN_FILE>` — Path to file for return value JSON
 * `--show-return` — Print return value to stdout
-* `--mode <MODE>` — Studio mode to run in (auto-transitions Studio). Defaults to edit; never inferred from --context/--dom, so a server/client run must pass --mode explicitly (e.g. --mode run --context server)
+* `--mode <MODE>` — Studio mode to run in (auto-transitions Studio, ending a running session of another kind first). Defaults to edit; never inferred from --context/--dom, so a server/client run must pass --mode explicitly (e.g. --mode run --context server). An explicit --mode edit ends a running session first; omit --mode (e.g. --dom edit) to leave it running
 
   Possible values: `edit`, `run`, `test`, `play`
 

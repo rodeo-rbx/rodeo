@@ -301,6 +301,10 @@ async fn handle_backend_msg(
                     guard.forward_execution_killed(&eid, *killed);
                     guard.complete_run(&eid, proto::ProcessState::PROCESS_STATE_KILLED);
                 }
+                PluginMsg::ModeFailed(failed) => {
+                    let mut guard = state.lock().await;
+                    guard.fail_mode_transition(&dom_id, &failed.target_mode, &failed.error);
+                }
             }
         }
         Msg::StateSnapshot(ss) => {
@@ -782,9 +786,10 @@ impl proto::MasterService for RodeoServices {
             _ => return Err(ConnectError::invalid_argument(format!("unknown mode '{}'", mode))),
         }
 
-        // Write target_modes and push SetTargetModeMsg to the edit DOM — plugin
-        // drives the transition. No DOM for the session is a hard error: the
-        // client would otherwise wait on a transition nobody was asked to make.
+        // Record the studio's explicit target and push SetTargetModeMsg to its
+        // DOMs — the plugins drive the transition. No DOM for the session is a
+        // hard error: the client would otherwise wait on a transition nobody
+        // was asked to make.
         let mut guard = self.state.lock().await;
         let pushed = guard.set_target_mode(&session_guid, &mode);
         drop(guard);

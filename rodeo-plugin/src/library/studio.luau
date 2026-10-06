@@ -110,6 +110,28 @@ do
 	end
 end
 
+-- Session kind ("test" | "play") of a session rodeo started: mode_driver.luau
+-- and the multiplayer start in rodeo-client pass test args tagged with it, and
+-- a play DataModel reads them back. Known at load, so mode_driver can end a
+-- session of the wrong kind before (or without) any client's CanLeaveTest
+-- verdict — a multiplayer test with no clients never gets one. nil for
+-- sessions started some other way (Studio's own Play buttons) or if
+-- GetTestArgs fails. The reported State.mode keeps waiting for the verdict:
+-- a solo test's server reports "test" only once its player has joined, and
+-- runs routed to it rely on that.
+local taggedSessionKind: ("test" | "play")? = nil
+if not RunService:IsEdit() then
+	local ok, args = pcall(function()
+		return StudioTestService:GetTestArgs()
+	end)
+	if ok and type(args) == "table" then
+		local kind = (args :: any).rodeoSession
+		if kind == "test" or kind == "play" then
+			taggedSessionKind = kind
+		end
+	end
+end
+
 -- Inputs: mutable values updated by events. The Heartbeat reads these to compute state.
 -- `*mcpStudioId*` values are StudioMCP's own ids (propagated via the RODEO_UNIFIER
 -- event channels by rodeo-cli's reconciliation loop). They are NOT the canonical
@@ -337,5 +359,11 @@ return {
 	listen = listen,
 	getState = function(): State?
 		return currentState
+	end,
+	-- This play DataModel's session kind for mode_driver: the start tag, else
+	-- the client verdict, else nil while unknown — unlike State.mode, which
+	-- falls back to "play". mode_driver must not end a session on that guess.
+	getSessionKind = function(): ("test" | "play")?
+		return taggedSessionKind or inputs.sessionKind
 	end,
 }

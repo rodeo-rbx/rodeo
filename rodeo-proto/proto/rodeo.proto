@@ -570,7 +570,17 @@ message PluginMessage {
     rodeo.runtime.ClientRpcCall rpc = 2;
     ExecutionDone done = 3;
     ExecutionKilled killed = 4;
+    ModeTransitionFailed mode_failed = 5;
   }
+}
+
+// The edit DOM gave up converging its Studio to `target_mode` (the engine kept
+// refusing to start the session, or the Studio never got there in time). The
+// master fails the queued runs that were waiting on that transition with
+// `error` instead of leaving them queued forever.
+message ModeTransitionFailed {
+  string target_mode = 1;
+  string error = 2;
 }
 
 // Server → Plugin
@@ -585,11 +595,16 @@ message ServerMessage {
   }
 }
 
-// Declarative target mode for the edit DOM to converge toward.
-// Backend writes this whenever the pending-run queue's target changes;
-// the plugin fires the appropriate StudioTestService transition.
+// Declarative target mode for a studio's DOMs to converge toward.
+// The master sends this to every DOM of a studio whenever the target (from
+// the queued runs, or SetStudioMode) or the studio's DOM set changes; the
+// server DOM ends a session that doesn't satisfy it, the edit DOM starts one.
 message SetTargetModeMsg {
   string target_mode = 1;   // "edit" | "run" | "test" | "play" | "" (clear)
+  // Target "play" only: the client count the edit DOM starts the multiplayer
+  // test with (ExecuteMultiplayerTestAsync). 1 when a queued run needs a
+  // client DOM, else 0.
+  uint32 num_players = 2;
 }
 
 message StudioStateMsg {

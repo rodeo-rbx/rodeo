@@ -434,6 +434,15 @@ async fn handle_plugin_message(
                 move |dom, eid| { dom.forward_execution_killed(eid, killed_owned); },
             ).await;
         }
+        proto::plugin_message::Msg::ModeFailed(failed) => {
+            // Mode targets and the run queue live on the master; it fails the
+            // runs that were waiting on this transition.
+            tracing::warn!(target_mode = failed.target_mode.as_str(), error = failed.error.as_str(), "plugin gave up on a mode transition");
+            let guard = state.lock().await;
+            if let Some(ref relay_tx) = guard.relay_tx {
+                let _ = relay_tx.send(wrap_dom_plugin_message(dom_id, pm_for_relay));
+            }
+        }
     }
 }
 
