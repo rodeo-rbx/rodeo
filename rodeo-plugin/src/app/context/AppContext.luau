@@ -129,6 +129,8 @@ local function AppProvider(props: AppProviderProps)
 		elseif connected and serverVersion ~= nil and serverVersion ~= constants.BUILD_ID then
 			-- The backend refuses a mismatched plugin (see plugin_ws.rs), so
 			-- this is what the user sees between the welcome and the close.
+			-- A backend older than that check keeps the socket, and this
+			-- plugin refuses its runs instead (MessageHandler).
 			local hex = COLORS.error:ToHex()
 			local server = if serverVersion == "" then "older build" else `v{serverVersion}`
 			return `<font color="#{hex}">Version mismatch (server {server})</font>`
@@ -265,6 +267,9 @@ local function AppProvider(props: AppProviderProps)
 			setIsExecuting = setIsExecuting,
 			setActiveProcesses = setActiveProcesses,
 			setServerVersion = noteServerVersion,
+			getServerVersion = function()
+				return serverVersionRef.current
+			end,
 		})
 
 		return cleanup

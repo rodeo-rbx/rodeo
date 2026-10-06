@@ -15,6 +15,9 @@ local PORT: number = if type(bakedPort) == "number" then bakedPort else DEFAULT_
 -- by build and port instead of flat globals. The launch bootstrap computes the
 -- same key in Rust (`plugin_key` in launch.rs) to hand cmdbar results back.
 local PLUGIN_KEY = `{RODEO_BUILD_ID}-{PORT}`
+-- This plugin's file in Studio's plugins folder, as the backend names it
+-- (`plugin_file_name` in launch.rs). A rojo-served dev plugin has no file.
+local PLUGIN_FILE = `rodeo-{RODEO_BUILD_ID}-{PORT}.rbxm`
 
 return {
 	-- Suffix used to rename modules during uncacheable require traversal
@@ -37,6 +40,7 @@ return {
 	-- launch on the handshake.
 	PORT = PORT,
 	PLUGIN_KEY = PLUGIN_KEY,
+	PLUGIN_FILE = PLUGIN_FILE,
 	VERBOSE = false,
 
 	-- Bit positions for context bitset

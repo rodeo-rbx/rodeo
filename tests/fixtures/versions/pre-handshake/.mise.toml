@@ -1,0 +1,12 @@
+# Cross-version fixture: rodeo 1.3.0, the last release before the plugin
+# version check (1.4.0-rc.1). Its server registers whatever plugin dials its
+# port and routes runs to it, so keep this a pre-1.4 version.
+# tests/cli/operations/crossVersion.test.ts resolves the binary with
+# `mise -C <this dir> which rodeo`.
+[tools]
+"ubi:revvy02/rodeo" = "1.3.0"
+
+# 1.3.0 ignores RODEO_PORT; the test passes --port explicitly. Kept so the
+# fixture reads like a real project.
+[env]
+RODEO_PORT = "47620"

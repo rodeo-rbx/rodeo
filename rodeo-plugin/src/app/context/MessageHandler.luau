@@ -11,6 +11,7 @@ local runtime = require(script.Parent.Parent.Parent.library.runtime)
 local utils = require(script.Parent.Parent.Parent.library.utils)
 local constants = require(script.Parent.Parent.Parent.library.constants)
 local mode_driver = require(script.Parent.Parent.Parent.library.mode_driver)
+local server_version = require(script.Parent.Parent.Parent.library.server_version)
 local simulator = require(script.Parent.Parent.Parent.library.simulator)
 local rodeoProto = require(script.Parent.Parent.Parent.Parent.proto.rodeo)
 local runtimeProto = require(script.Parent.Parent.Parent.Parent.proto.runtime)
@@ -27,6 +28,9 @@ type CreateHandlerArgs = {
 	setActiveProcesses: ({ [string]: ProcessEntry }) -> (),
 	-- Backend build id from WelcomeMsg ("" if the backend predates it).
 	setServerVersion: (string) -> (),
+	-- The last one set, which outlives this handler: a verbose toggle
+	-- recreates the handler on the same socket, after its welcome.
+	getServerVersion: () -> string?,
 }
 
 local function createHandler(args: CreateHandlerArgs): () -> ()
@@ -35,6 +39,7 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 	local setIsExecuting = args.setIsExecuting
 	local setActiveProcesses = args.setActiveProcesses
 	local setServerVersion = args.setServerVersion
+	local getServerVersion = args.getServerVersion
 
 	-- Track active processes keyed by executionId
 	local activeProcesses: { [string]: { ctx: utils.ExecutionContext, kill: (() -> ())? } } = {}
@@ -65,6 +70,54 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 		local msg = rodeoProto.PluginMessage.new({ msg = { type = "done", value = done } })
 		client:Send(HttpService:JSONEncode(msg:jsonEncode()))
 		updateExecuting()
+	end
+
+	-- Why this plugin won't run the server's scripts, or nil if it will. The
+	-- backend is the enforcing side: since 1.4 it routes no runs to a plugin
+	-- of another build (it closes or parks the socket, or
+	-- RODEO_SKIP_VERSION_CHECK made it accept on purpose). A server older than
+	-- that check routes runs here regardless, so the plugin refuses them
+	-- itself (see server_version.luau). The server's welcome always precedes
+	-- its first run, so the version read here is this connection's.
+	local function refusal(): string?
+		local serverVersion = getServerVersion()
+		if serverVersion == nil or serverVersion == constants.BUILD_ID then
+			return nil
+		end
+		if not server_version.predatesHandshake(serverVersion) then
+			return nil
+		end
+		return server_version.refusal({
+			build = constants.BUILD_ID,
+			version = constants.VERSION,
+			file = constants.PLUGIN_FILE,
+		}, serverVersion)
+	end
+
+	-- Answer a run this plugin won't execute, so its CLI fails it with the
+	-- reason instead of waiting forever. The message goes out as a stderr
+	-- write, which every rodeo CLI prints (old ones never print
+	-- ExecutionDone.error), and as the error of the ExecutionDone that ends
+	-- the run, marked as already in the output so a current CLI doesn't print
+	-- it twice.
+	local function refuseRun(executionId: string, message: string)
+		local write = runtimeProto.ClientRpcCall.jsonDecode({
+			id = "",
+			executionId = executionId,
+			streamWrite = { handle = "stderr", data = `\27[31m[rodeo] {message}\27[0m\n` },
+		})
+		client:Send(HttpService:JSONEncode(rodeoProto.PluginMessage.new({
+			msg = { type = "rpc", value = write },
+		}):jsonEncode()))
+		local done = rodeoProto.PluginMessage.new({
+			msg = { type = "done", value = rodeoProto.ExecutionDone.new({
+				executionId = executionId,
+				success = false,
+				error = message,
+				errorInOutput = true,
+			}) },
+		})
+		client:Send(HttpService:JSONEncode(done:jsonEncode()))
 	end
 
 	-- Start a run whose full script is assembled. Everything after script
@@ -225,14 +278,19 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 			local welcome = serverMsg.msg.value
 			local serverVersion = welcome.version or ""
 			setServerVersion(serverVersion)
-			-- Display only: the backend is the enforcing side (it closes the
-			-- socket on a mismatch). An older backend that doesn't check still
-			-- gets a working plugin, as before.
 			if serverVersion ~= constants.BUILD_ID then
-				warn(`[rodeo] Version mismatch: plugin is v{constants.BUILD_ID}, server is v{serverVersion}`)
+				local refusing = if refusal()
+					then " (predates rodeo's plugin version check), so this plugin refuses its runs"
+					else ""
+				warn(`[rodeo] Version mismatch: plugin is v{constants.BUILD_ID}, server is v{serverVersion}{refusing}`)
 			end
 		elseif serverMsg.msg and serverMsg.msg.type == "run" then
 			local run = serverMsg.msg.value
+			local refused = refusal()
+			if refused then
+				refuseRun(run.executionId, refused)
+				return
+			end
 			if run.scriptContinues then
 				-- First piece of a chunked script — stash and wait for the
 				-- ScriptChunk sequence before executing.
