@@ -97,6 +97,50 @@ local setupLogging = require(ref("logging"))
 -- Setup log capture (LogService → stdout stream, optional output file)
 local logConnection, outputFileStream = setupLogging(LogService, apis.fs, apis.stream, apis.io, logFilter, outputFile)
 
+-- --reload-requires: the plugin parents a `reload` BindableFunction here and
+-- gives every module the run loads from a copy (and the entry) the reload
+-- prelude, whose `require` wrapper looks this mapper up through the run id
+-- stamped on its module. Lives in the run's VM because the wrapper does; the
+-- plugin side (require_resolver's session) does the copying.
+local reloadFn = script:FindFirstChild("reload")
+local reloadDone = false
+if reloadFn then
+	ns.reload = ns.reload or {}
+	local mapped = {}
+	local swappedStrings = {}
+	ns.reload[executionId] = function(target, from)
+		if reloadDone then
+			return target
+		end
+		if typeof(target) == "Instance" then
+			-- Already this run's copy: by far the common case once a module is
+			-- swapped in, since paths and names then lead to the copy.
+			if target:GetAttribute("rodeoExecutionId") == executionId then
+				return target
+			end
+			local copy = mapped[target]
+			if copy == nil then
+				copy = reloadFn:Invoke(target, from)
+				mapped[target] = copy
+			end
+			return copy
+		elseif type(target) == "string" then
+			-- The real require resolves the path, relative to `from`; the
+			-- plugin only swaps the copy in under that path first.
+			local seen = swappedStrings[from]
+			if not seen then
+				seen = {}
+				swappedStrings[from] = seen
+			end
+			if not seen[target] then
+				seen[target] = true
+				reloadFn:Invoke(target, from)
+			end
+		end
+		return target
+	end
+end
+
 -- Execute user module
 local context = script:GetAttribute("context") or "plugin"
 
@@ -194,6 +238,9 @@ local success, result = xpcall(function()
 	end
 	return require(module)
 end, debug.traceback)
+-- The plugin destroys this run's copies once results are in; a thread the
+-- run left behind gets the plain require from here on.
+reloadDone = true
 
 task.wait(0.2) -- Allow final logs to flush
 logConnection:Disconnect()
@@ -267,6 +314,9 @@ end
 
 -- Clean up process-scoped _G entry
 ns.procs[executionId] = nil
+if ns.reload then
+	ns.reload[executionId] = nil
+end
 _G.__rodeo_eid = nil
 _G.__rodeo_procs[executionId] = nil
 

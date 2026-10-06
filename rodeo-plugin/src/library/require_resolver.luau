@@ -5,6 +5,8 @@
 	to bypass Roblox's require cache, and cleaning up after execution.
 ]]
 
+local constants = require(script.Parent.constants)
+local reloadPrelude = require(script.Parent.reload_prelude)
 local utils = require(script.Parent.utils)
 
 -- Noop logger for functions called without one
@@ -233,83 +235,252 @@ local function getRequireInstance(requireString: string, currentScript: Instance
 	return resolved
 end
 
-local function recurse(currentModule: ModuleScript, clonedModules: { [ModuleScript]: true }, clonedRoots: { ModuleScript }, disabledInstances, visited: { [ModuleScript]: true }, suffix: string, log: any)
-	if visited[currentModule] then
-		return
+-- Source assignment rejects strings of 200,000 bytes and up (see
+-- utils.updateSource); below that, plain assignment avoids a yield per module.
+local MAX_ASSIGNED_SOURCE = 199999
+
+local function describe(target: any): string
+	if typeof(target) == "Instance" then
+		return target:GetFullName()
 	end
-	visited[currentModule] = true
-
-	log.debug(`Processing: {currentModule:GetFullName()}`)
-	local source = currentModule.Source
-	local requires = extractRequires(source)
-	log.debug(`Found {#requires} require() calls`)
-
-	for _, requirePath in requires do
-		log.debug(`Resolving: {requirePath}`)
-		local requireModule = getRequireInstance(requirePath, currentModule, log)
-
-		if not requireModule then
-			log.debug(`Failed to resolve, skipping`)
-			continue
-		end
-
-		log.debug(`Resolved to: {requireModule:GetFullName()}`)
-
-		-- If already cloned, still recurse to discover external deps
-		if clonedModules[requireModule] then
-			log.debug(`Already in cloned subtree, recursing for external deps`)
-			recurse(requireModule, clonedModules, clonedRoots, disabledInstances, visited, suffix, log)
-			continue
-		end
-
-		-- Find root ancestor of this module (topmost ModuleScript)
-		local moduleRoot = findRootModule(requireModule)
-		log.debug(`Root module: {moduleRoot:GetFullName()}`)
-
-		-- Clone entire root subtree
-		local rootCopy = moduleRoot:Clone()
-		table.insert(clonedRoots, rootCopy)
-		clonedModules[rootCopy] = true
-		log.debug(`Cloned root: {moduleRoot.Name}`)
-
-		-- Track all descendant ModuleScripts for skip checking
-		for _, descendant in rootCopy:GetDescendants() do
-			if descendant:IsA("ModuleScript") then
-				clonedModules[descendant] = true
-			end
-		end
-
-		-- Swap: rename original root, insert clone as sibling
-		local name = moduleRoot.Name
-		moduleRoot.Name = name .. suffix
-		rootCopy.Parent = moduleRoot.Parent
-		log.debug(`Swapped: {name} <-> {moduleRoot.Name}`)
-
-		table.insert(disabledInstances, moduleRoot)
-
-		-- Recurse into cloned root
-		recurse(rootCopy, clonedModules, clonedRoots, disabledInstances, visited, suffix, log)
-	end
+	return tostring(target)
 end
 
--- Setup uncachable requires by cloning and renaming modules
-local function setupUncachableRequireModuleTraversal(rootInstance: ModuleScript, executionId: string?, log: any?): () -> ()
+export type ReloadSession = {
+	-- Give the run's entry module (and any modules under it) the require
+	-- wrapper. The entry is already the run's own instance.
+	adopt: (module: ModuleScript) -> (),
+	-- Swap copies in, ahead of time, for every require the module's source
+	-- spells out in a form that evaluates on its own (a path from game or
+	-- script, or a ./, ../, @self string), then for their requires in turn.
+	traverse: (module: ModuleScript) -> (),
+	-- The plugin end of the require wrapper: maps a require argument to the
+	-- run's copy of its module, swapping one in on first use. `from` is the
+	-- module calling require.
+	resolve: (target: any, from: Instance?) -> any,
+	-- Restore the originals' names and destroy the copies.
+	cleanup: () -> (),
+}
+
+-- One --reload-requires run's set of fresh module copies. Each copied module
+-- tree replaces its original under the original's name (the original is
+-- renamed aside), so anything that finds a module by name or path during the
+-- run, string requires included, reaches the copy. Every copy, and the entry,
+-- also starts with the reload prelude, whose wrapper sends require arguments
+-- the traversal couldn't evaluate ahead of time to `resolve` (issue #33).
+local function createReloadSession(executionId: string?, log: any?): ReloadSession
 	local l = log or noopLog
-	l.debug(`START for {rootInstance:GetFullName()}`)
 
 	-- Process-scoped suffix so concurrent processes don't collide
 	local eid = if executionId and executionId ~= "" then executionId else ""
 	local suffix = utils.makeIgnoreSuffix(eid)
 	local suffixPattern = utils.makeIgnoreSuffixPattern(eid)
 
-	local clonedModules = {}
-	local clonedRoots = {}
-	local disabledInstances = {}
-	recurse(rootInstance, clonedModules, clonedRoots, disabledInstances, {}, suffix, l)
+	-- Modules this run owns: the entry's tree and every copy swapped in.
+	local owned: { [ModuleScript]: true } = {}
+	-- Original module → the copy standing in for it this run.
+	local copyOf: { [ModuleScript]: ModuleScript } = {}
+	local clonedRoots: { ModuleScript } = {}
+	local disabledInstances: { ModuleScript } = {}
+	local visited: { [ModuleScript]: true } = {}
+	local warned: { [string]: true } = {}
+	local closed = false
 
-	l.debug(`COMPLETE: {#clonedRoots} roots cloned, {#disabledInstances} originals renamed`)
+	-- Prelude plus the two attributes it finds this run's mapper by (the same
+	-- pair the @rodeo shims read on the entry).
+	local function prepare(module: ModuleScript)
+		owned[module] = true
+		local source = module.Source
+		local injected = reloadPrelude.inject(source)
+		-- An empty Source may not mean an empty module (LinkedSource, or a
+		-- DataModel that doesn't carry the text): writing the prelude there
+		-- would replace the code. Such a copy is still fresh, just unwrapped.
+		if source ~= "" and injected ~= source then
+			if #injected <= MAX_ASSIGNED_SOURCE then
+				module.Source = injected
+			else
+				utils.updateSource(module, injected)
+			end
+		end
+		module:SetAttribute("rodeoPlugin", constants.PLUGIN_KEY)
+		module:SetAttribute("rodeoExecutionId", eid)
+	end
 
-	return function()
+	local function prepareTree(root: ModuleScript)
+		prepare(root)
+		for _, descendant in root:GetDescendants() do
+			if descendant:IsA("ModuleScript") then
+				prepare(descendant)
+			end
+		end
+	end
+
+	-- Record which copy stands in for each original module under `original`,
+	-- so a require that reaches an original (a reference held before the
+	-- swap, or a child of a root copied for a sibling) maps to its copy.
+	-- Clone keeps child order but leaves out non-Archivable children: pair by
+	-- position, falling back to the first unpaired child of the same name and
+	-- class.
+	local function pairCopies(original: Instance, copy: Instance)
+		if original:IsA("ModuleScript") and copy:IsA("ModuleScript") then
+			copyOf[original] = copy
+		end
+		local copyChildren = copy:GetChildren()
+		local paired: { [Instance]: true } = {}
+		local function matches(child: Instance, candidate: Instance?): boolean
+			return candidate ~= nil
+				and not paired[candidate]
+				and candidate.Name == child.Name
+				and candidate.ClassName == child.ClassName
+		end
+		local position = 0
+		for _, child in original:GetChildren() do
+			if not child.Archivable then
+				continue
+			end
+			position += 1
+			local counterpart = copyChildren[position]
+			if not matches(child, counterpart) then
+				counterpart = nil
+				for _, candidate in copyChildren do
+					if matches(child, candidate) then
+						counterpart = candidate
+						break
+					end
+				end
+			end
+			if counterpart then
+				paired[counterpart] = true
+				pairCopies(child, counterpart)
+			end
+		end
+	end
+
+	-- Copy a root module tree (topmost ModuleScript) and swap the copy in
+	-- under the original's name.
+	local function swapRoot(moduleRoot: ModuleScript): ModuleScript
+		local existing = copyOf[moduleRoot]
+		if existing then
+			return existing
+		end
+
+		local rootCopy = moduleRoot:Clone()
+		if rootCopy == nil then
+			error(`{moduleRoot:GetFullName()} has Archivable off, so it can't be copied`, 0)
+		end
+		-- Before parenting, so the copy enters the DataModel already wrapped.
+		prepareTree(rootCopy)
+		pairCopies(moduleRoot, rootCopy)
+		table.insert(clonedRoots, rootCopy)
+		l.debug(`Cloned root: {moduleRoot.Name}`)
+
+		-- Swap: rename original root, insert clone as sibling
+		local name = moduleRoot.Name
+		moduleRoot.Name = name .. suffix
+		rootCopy.Parent = moduleRoot.Parent
+		l.debug(`Swapped: {name} <-> {moduleRoot.Name}`)
+
+		table.insert(disabledInstances, moduleRoot)
+		return rootCopy
+	end
+
+	local function traverse(currentModule: ModuleScript)
+		if visited[currentModule] then
+			return
+		end
+		visited[currentModule] = true
+
+		l.debug(`Processing: {currentModule:GetFullName()}`)
+		local source = currentModule.Source
+		local requires = extractRequires(source)
+		l.debug(`Found {#requires} require() calls`)
+
+		for _, requirePath in requires do
+			l.debug(`Resolving: {requirePath}`)
+			local requireModule = getRequireInstance(requirePath, currentModule, l)
+
+			if not requireModule then
+				-- Typically a path through a local variable, which is nil when
+				-- the argument is evaluated on its own. The require wrapper
+				-- swaps that module in when the require runs.
+				l.debug(`Failed to resolve ahead of time, left to the require wrapper`)
+				continue
+			end
+
+			l.debug(`Resolved to: {requireModule:GetFullName()}`)
+
+			-- If already cloned, still recurse to discover external deps
+			if owned[requireModule] then
+				l.debug(`Already in cloned subtree, recursing for external deps`)
+				traverse(requireModule)
+				continue
+			end
+
+			-- Find root ancestor of this module (topmost ModuleScript)
+			local moduleRoot = findRootModule(requireModule)
+			l.debug(`Root module: {moduleRoot:GetFullName()}`)
+
+			local swapped, rootCopy = pcall(swapRoot, moduleRoot)
+			if not swapped then
+				l.warn(
+					`--reload-requires couldn't reload {moduleRoot:GetFullName()}, so it returns the cached module: {rootCopy}`
+				)
+				continue
+			end
+
+			-- Recurse into cloned root
+			traverse(rootCopy)
+		end
+	end
+
+	local function resolveNow(target: any, from: Instance?): any
+		if typeof(target) == "Instance" then
+			if not target:IsA("ModuleScript") or owned[target] then
+				return target
+			end
+			local copy = copyOf[target]
+			if copy then
+				return copy
+			end
+			swapRoot(findRootModule(target))
+			l.debug(`Reloaded at require time: {target:GetFullName()}`)
+			return copyOf[target] or target
+		elseif type(target) == "string" and typeof(from) == "Instance" then
+			-- The real require resolves the string relative to the calling
+			-- module and finds the module by name, so swapping the copy in
+			-- under that name is all it takes.
+			local found = getRobloxStringPathInstance(from, target)
+			if found then
+				resolveNow(found, from)
+			elseif string.sub(target, 1, 1) == "@" and string.sub(target, 1, 5) ~= "@self" and not warned[target] then
+				-- An alias. (A ./, ../ or @self path that doesn't resolve
+				-- names a missing module, which the real require reports.)
+				warned[target] = true
+				l.warn(
+					`--reload-requires can't resolve require("{target}") in {from:GetFullName()}: `
+						.. "only ./, ../ and @self paths are resolved, so it may return the cached module"
+				)
+			end
+		end
+		return target
+	end
+
+	local function resolve(target: any, from: Instance?): any
+		-- The run is over and its copies are gone: a thread it left running
+		-- gets the plain require.
+		if closed then
+			return target
+		end
+		local ok, result = pcall(resolveNow, target, from)
+		if ok then
+			return result
+		end
+		l.warn(`--reload-requires couldn't reload {describe(target)}, so it returns the cached module: {result}`)
+		return target
+	end
+
+	local function cleanup()
+		closed = true
 		l.debug(`Cleanup START`)
 
 		-- PHASE 1: Restore original names
@@ -327,11 +498,18 @@ local function setupUncachableRequireModuleTraversal(rootInstance: ModuleScript,
 
 		l.debug(`Cleanup END`)
 	end
+
+	return {
+		adopt = prepareTree,
+		traverse = traverse,
+		resolve = resolve,
+		cleanup = cleanup,
+	}
 end
 
 return {
 	getAbsoluteInstancePath = getAbsoluteInstancePath,
-	setupUncachableRequireModuleTraversal = setupUncachableRequireModuleTraversal,
+	createReloadSession = createReloadSession,
 	extractRequires = extractRequires,
 	extractParenthesisContent = extractParenthesisContent,
 	getRobloxStringPathInstance = getRobloxStringPathInstance,

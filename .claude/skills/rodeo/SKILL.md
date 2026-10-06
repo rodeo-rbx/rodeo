@@ -235,6 +235,8 @@ Instance requires (`require(game.ReplicatedStorage.Foo)`) use the require cache 
 
 `--reload-requires` re-evaluates them instead, so the run gets its own fresh copies. Use it for test isolation, or to pick up edits you made to a DOM ModuleScript after it was first required. It temporarily adds and renames instances in the open place while the run is in flight.
 
+It applies to every instance require in the run, however the argument is written: a path through a local (`local RS = game:GetService("ReplicatedStorage")` then `require(RS.Foo)`), a computed path, or a module found by looping over children. Each module the run loads starts with a `require` wrapper on its first code line, so line numbers in errors are unchanged.
+
 Filesystem requires are fresh on every run either way, because the bundler inlines them.
 
 Two consequences decide which mode you need:
