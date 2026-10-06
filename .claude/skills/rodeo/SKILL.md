@@ -511,15 +511,13 @@ viewport rendered is reported as an error (raise `settle`), never retried.
 running session. Server context errors. The frame is taken from the file the
 engine writes for every capture, snapshotting the directory first and erroring
 on ambiguity rather than guessing, so the simulator's full 7680 by 4320 works
-on every display. A frame the engine did not render is refused: a solo
-play-test session (`--mode test`) captures black on macOS (issue #17), so
-capture from a multiplayer session (`--mode play`) or in edit mode. Limits are
-Studio's own and surface as errors: the device simulator accepts at most 7680
-by 4320. The capture then waits for the engine with no deadline (a large frame
-or a slow GPU can take well over 10s; the largest frame takes about 7s). One
-case never completes and waits until the run is killed: a minimized Studio on
-Windows (background launches are minimized there; launch with `--focus` or
-restore the window first).
+on every display. A frame that comes back entirely black is refused with an
+error and nothing is written. Limits are Studio's own and surface as errors:
+the device simulator accepts at most 7680 by 4320. The capture then waits for
+the engine with no deadline (a large frame or a slow GPU can take well over
+10s; the largest frame takes about 7s). One case never completes and waits
+until the run is killed: a minimized Studio on Windows (background launches
+are minimized there; launch with `--focus` or restore the window first).
 
 ### `@lune` adapters — run lune-flavored code unchanged
 

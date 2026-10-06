@@ -90,14 +90,15 @@ fn finalize_pixels(
         ));
     }
 
-    // The engine reports success for a frame it never rendered: a solo
-    // play-test session's captures come out all zero (issue #17), and v1.3.0
-    // wrote those as PNGs that read as "my scene is black". Refuse them.
+    // The engine can report success for a frame it never rendered: on macOS,
+    // Studio 0.739 returned solo play-test captures all zero (issue #17; a
+    // real frame by 0.741.19), and v1.3.0 wrote those as PNGs that read as
+    // "my scene is black". Refuse an all-black frame rather than write it.
     if rgba.chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0) {
         return Err(
-            "captured frame is entirely black: Studio did not render this capture. In a solo play-test \
-             session (--mode test) Studio's captures come out black (rodeo issue #17); capture from a \
-             multiplayer session (--mode play) or in edit mode. Nothing was written."
+            "captured frame is entirely black: every pixel Studio returned is black, so nothing was \
+             written. Either Studio did not render this capture (older Studio builds returned black \
+             frames in solo play-test sessions on macOS) or everything in view is black."
                 .to_string(),
         );
     }

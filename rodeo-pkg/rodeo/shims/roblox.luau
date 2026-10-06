@@ -47,9 +47,9 @@ type CaptureInfo = {
 -- run client snapshots that directory before the capture and accepts exactly
 -- one complete PNG that appears afterwards at the viewport's size, erroring
 -- on ambiguity rather than guessing. It then verifies the frame against the
--- viewport, refuses an all-black frame (a solo play-test session captures
--- black, issue #17), resamples to exactly the viewport (the engine renders at
--- the display scale, 2x on Retina) and writes the PNG.
+-- viewport, refuses an all-black frame (a frame Studio did not render),
+-- resamples to exactly the viewport (the engine renders at the display
+-- scale, 2x on Retina) and writes the PNG.
 --
 -- `device` / `viewportSize` drive Studio's device simulator for the shot via
 -- plugin-handled RPCs (the service is PluginSecurity; the plugin acts in this

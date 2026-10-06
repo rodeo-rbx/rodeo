@@ -408,23 +408,21 @@ the client DOM of a running session. The frame is taken from the file the
 
 engine writes for every capture, so the simulator's full 7680 by 4320
 
-works on every display; a frame the engine did not render is refused
+works on every display; a frame that comes back entirely black is refused
 
-rather than written: a solo play-test session (`--mode test`) captures
+with an error and nothing is written. Limits are Studio's own and surface
 
-black on macOS, so capture from a multiplayer session (`--mode play`) or
+as errors: the device simulator accepts at most 7680 by 4320. The capture
 
-in edit mode. Limits are Studio's own and surface as errors: the device
+then waits for the engine with no deadline, since a large frame or a slow
 
-simulator accepts at most 7680 by 4320. The capture then waits for the
+GPU can take well over 10s (the largest frame takes about 7s). One case
 
-engine with no deadline, since a large frame or a slow GPU can take well
+never completes and waits until the run is killed: a minimized Studio on
 
-over 10s (the largest frame takes about 7s). One case never completes and
+Windows (background launches are minimized there; launch focused or
 
-waits until the run is killed: a minimized Studio on Windows (background
-
-launches are minimized there; launch focused or restore the window).
+restore the window).
 
 ```luau
 (output: string?, options: CaptureOptions?) -> (string, CaptureInfo)

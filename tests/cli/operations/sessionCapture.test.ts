@@ -17,10 +17,10 @@ import { decodePng, countPixels } from "../../utils/png.js";
 // fresh Studio because the mode driver treats a live solo session as already
 // satisfying --mode play:
 //  - multiplayer (--mode play): the child client process renders a real frame;
-//  - solo play-test (--mode test): the engine's own frame is all zero on macOS.
-//    rodeo must refuse it with a specific error and write nothing (v1.3.0
-//    wrote the black PNG). On a platform where the frame is real, a real
-//    frame is accepted instead.
+//  - solo play-test (--mode test): Studio 0.739 on macOS returned this frame
+//    all zero (a real frame by 0.741.19). A real frame is accepted; a black
+//    one must be refused with a specific error and nothing written (v1.3.0
+//    wrote the black PNG).
 
 type Capture =
   | { ok: true; path: string; width: number; height: number; vpX: number; vpY: number }

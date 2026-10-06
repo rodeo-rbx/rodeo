@@ -44,6 +44,6 @@ display. That directory is shared by all Studio processes, so rodeo snapshots
 it before the capture and accepts exactly one complete PNG that appears
 afterwards at the viewport's size. Two candidates at once is an error to
 retry, never a guess, and a frame that is entirely black is refused rather
-than written: in a solo play-test session Studio captures black on macOS.
-The image is resampled to the viewport by default so UI offsets map 1:1 onto
-pixels; `resample = false` keeps the frame at its rendered size instead.
+than written. The image is resampled to the viewport by default so UI offsets
+map 1:1 onto pixels; `resample = false` keeps the frame at its rendered size
+instead.

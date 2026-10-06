@@ -130,8 +130,8 @@ message RobloxCaptureCollectResponse {
 // pixels a side everywhere. Begin snapshots that directory before
 // CaptureScreenshot; collect waits for exactly one complete PNG that appeared
 // since and matches the viewport at the display scale, then finalizes it:
-// scale check, all-black rejection (a solo play-test session captures black),
-// resample to exactly width x height, PNG written atomically. Several new
+// scale check, all-black rejection (a frame Studio did not render), resample
+// to exactly width x height, PNG written atomically. Several new
 // matching files at once (another Studio capturing concurrently) is an error,
 // never a guess.
 message RobloxCaptureBeginRequest {}
