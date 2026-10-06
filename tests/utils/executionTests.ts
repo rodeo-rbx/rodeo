@@ -835,7 +835,7 @@ export function uncachedRequireTraversal(run: RunFn): void {
   });
 }
 
-// ── cachedRequireTraversal (4 tests) ─────────────────────────────────────
+// ── cachedRequireTraversal (5 tests) ─────────────────────────────────────
 
 export function cachedRequireTraversal(run: RunFn): void {
   // Cached requires are the default now — no flag: the require resolves to
@@ -870,6 +870,45 @@ export function cachedRequireTraversal(run: RunFn): void {
     const result = await exec("return require(game.ReplicatedStorage.deep).child.leaf.value");
     expect(result.ok).toBe(true);
     expect(result.return).toBe("mutated");
+  });
+
+  it("module edited after it was cached comes back fresh, with its requirers", async () => {
+    // Issue #10: the cache used to hand back the old module after its Source
+    // changed. Writing Source needs plugin identity; the requires run as
+    // server Scripts so they use the game's require cache.
+    const plugin = (source: string) => run({ mode: "run", context: "plugin", source });
+
+    const setup = await plugin(`
+      local folder = Instance.new("Folder"); folder.Name = "EditRepro"; folder.Parent = game:GetService("ReplicatedStorage")
+      local inner = Instance.new("ModuleScript"); inner.Name = "Inner"; inner.Source = "return 1"; inner.Parent = folder
+      local outer = Instance.new("ModuleScript"); outer.Name = "Outer"; outer.Source = "return require(script.Parent.Inner)"; outer.Parent = folder`);
+    expect(setup.ok, setup.output).toBe(true);
+    try {
+      const cached = await exec(
+        'local RS = game:GetService("ReplicatedStorage")\nreturn { inner = require(RS.EditRepro.Inner), outer = require(RS.EditRepro.Outer) }',
+      );
+      expect(cached.return).toEqual({ inner: 1, outer: 1 });
+
+      const edit = await plugin('game:GetService("ReplicatedStorage").EditRepro.Inner.Source = "return 2"');
+      expect(edit.ok, edit.output).toBe(true);
+
+      const literal = await exec("return require(game.ReplicatedStorage.EditRepro.Inner)");
+      expect(literal.return).toBe(2);
+      // Outer is unchanged but requires Inner, so it reloads too; leaf is
+      // untouched by the edit and stays the game's live module.
+      const viaLocal = await exec(
+        'local RS = game:GetService("ReplicatedStorage")\nreturn { outer = require(RS.EditRepro.Outer), leaf = require(RS.leaf).value }',
+      );
+      expect(viaLocal.return).toEqual({ outer: 2, leaf: "mutated" });
+
+      // Back to the Source the game cached: the live module again.
+      const revert = await plugin('game:GetService("ReplicatedStorage").EditRepro.Inner.Source = "return 1"');
+      expect(revert.ok, revert.output).toBe(true);
+      const live = await exec("return require(game.ReplicatedStorage.EditRepro.Outer)");
+      expect(live.return).toBe(1);
+    } finally {
+      await plugin('game:GetService("ReplicatedStorage").EditRepro:Destroy()');
+    }
   });
 }
 

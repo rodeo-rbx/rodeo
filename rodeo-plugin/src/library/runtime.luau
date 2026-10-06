@@ -73,12 +73,16 @@ local function executeInContext(ctx: utils.ExecutionContext, context: RunContext
 	-- is already using. `reloadRequires` opts into re-evaluation: the traversal
 	-- clones the require tree so this run gets its own freshly-initialized
 	-- copies (test isolation, or picking up edits made since the modules were
-	-- first required).
+	-- first required). Without it, a module whose Source changed since this DOM
+	-- cached it, and what requires it, still comes back fresh (see
+	-- setupChangedModuleReload).
 	local traversalCleanup: (() -> ())? = nil
 	if params.reloadRequires then
 		log.debug(`Setting up uncachable require traversal...`)
 		traversalCleanup = requireResolver.setupUncachableRequireModuleTraversal(ctx.module, params.executionId, log)
 		log.debug(`Traversal setup complete`)
+	else
+		traversalCleanup = requireResolver.setupChangedModuleReload(ctx.module, params.executionId, log)
 	end
 
 	-- Re-resolve module via path (picks up cloned module if traversal cloned it)

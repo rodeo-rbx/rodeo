@@ -233,6 +233,8 @@ defaults to edit, and edit has only an edit DOM).
 
 Instance requires (`require(game.ReplicatedStorage.Foo)`) use the require cache by default. This matches Roblox's own semantics: the require resolves to the **live module the running game already uses**. Mutate state in one run and the next run sees it. Inspect a running game's modules and you get its real state.
 
+The exception is a module whose Source changed since a run in that DOM first required it (a package patched on disk, a file synced in): the run gets a fresh copy of it, and of each module in the run's require graph that requires it, and rodeo prints a note naming it once per edit. Other modules stay live. rodeo finds the graph by reading sources: paths from `game`, `workspace`, `script`, or a `local` holding such a path, and `./`, `../`, `@self` strings. A module reached only through a computed require (`require(folder[name])`, a loop over children) isn't checked.
+
 `--reload-requires` re-evaluates them instead, so the run gets its own fresh copies. Use it for test isolation, or to pick up edits you made to a DOM ModuleScript after it was first required. It temporarily adds and renames instances in the open place while the run is in flight.
 
 Filesystem requires are fresh on every run either way, because the bundler inlines them.
