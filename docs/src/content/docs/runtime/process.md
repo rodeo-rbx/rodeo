@@ -14,7 +14,7 @@ These APIs are not finalized and may change in backwards incompatible ways.
 | Entry | Description |
 | :--- | :--- |
 | [ProcessHandle](#processhandle) | Handle to a process started with `create`. Fields are populated when |
-| [ProcessResult](#processresult) | Result returned by `run` and `system` — exit code plus captured |
+| [ProcessResult](#processresult) | Result returned by `run` and `system`. |
 | [ProcessRunOptions](#processrunoptions) | Options accepted by `run`, `system`, and `create`. All fields optional. |
 | [StdioKind](#stdiokind) | How a stdio stream should be wired for a spawned process. `"default"` |
 | [args](#processargs) | The command-line arguments passed to this rodeo execution after `--`. |
@@ -52,12 +52,17 @@ type ProcessHandle = {
 
 ### ProcessResult
 
-Result returned by `run` and `system` — exit code plus captured
+Result returned by `run` and `system`.
 
-stdout/stderr (when `piped`).
+`out` and `err` are the captured stdout and stderr, empty when `run` waits on a `create` handle.
 
 ```luau
-type ProcessResult = runtime.ProcessRunResponse
+type ProcessResult = {
+	ok: boolean, -- true when the process exited with status 0
+	exitcode: number, -- -1 when the process was terminated by a signal
+	out: string,
+	err: string,
+}
 ```
 
 ---

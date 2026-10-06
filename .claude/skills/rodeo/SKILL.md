@@ -290,7 +290,7 @@ process.execpath()  -- path to rodeo executable
 process.platform()  -- "macos" | "windows" | ...
 process.exit(code)
 
--- Blocking execution
+-- Blocking execution; ProcessResult is { ok, exitcode, out, err }
 process.run(args, options?) -> ProcessResult
 process.system(command, options?) -> ProcessResult
 

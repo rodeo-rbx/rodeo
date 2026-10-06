@@ -138,15 +138,20 @@ local process = require("@rodeo/process")
 local result = process.run({ "git", "rev-parse", "--abbrev-ref", "HEAD" }, {
     stdio = "piped",
 })
-local branch = string.gsub(result.stdout, "%s+$", "")
+if not result.ok then
+    error(`git exited with {result.exitcode}: {result.err}`)
+end
+local branch = string.gsub(result.out, "%s+$", "")
 print("on branch", branch)
 ```
+
+The result holds `ok`, `exitcode`, and the captured output as `out` (stdout) and `err` (stderr).
 
 `process.system` takes a shell command string instead of an argv list:
 
 ```luau
 local result = process.system("ls -la | head -5", { stdio = "piped" })
-print(result.stdout)
+print(result.out)
 ```
 
 `process.create` spawns without blocking — use it for long-running children you want to talk to via stream handles. The [process reference](/rodeo/runtime/process/) covers the full options table (`cwd`, `env`, per-stream `stdio` overrides).

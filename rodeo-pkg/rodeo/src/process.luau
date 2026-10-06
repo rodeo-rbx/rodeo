@@ -5,7 +5,6 @@
 
 local singleton = require("./_internal/singleton")
 local stream = require("./stream")
-local runtime = require(script.Parent.Parent.Parent.shared.proto.runtime)
 
 --- How a stdio stream should be wired for a spawned process. `"default"`
 --- uses the parent's stream, `"piped"` captures into a `StreamHandle`,
@@ -24,9 +23,14 @@ export type ProcessRunOptions = {
 	env: { [string]: string }?,
 }
 
---- Result returned by `run` and `system` — exit code plus captured
---- stdout/stderr (when `piped`).
-export type ProcessResult = runtime.ProcessRunResponse
+--- Result returned by `run` and `system`.
+--- `out` and `err` are the captured stdout and stderr, empty when `run` waits on a `create` handle.
+export type ProcessResult = {
+	ok: boolean, -- true when the process exited with status 0
+	exitcode: number, -- -1 when the process was terminated by a signal
+	out: string,
+	err: string,
+}
 
 --- Handle to a process started with `create`. Fields are populated when
 --- the corresponding stdio is `"piped"`; otherwise `nil`.
