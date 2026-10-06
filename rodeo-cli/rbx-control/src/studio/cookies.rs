@@ -29,13 +29,25 @@ pub fn store_path() -> Option<PathBuf> {
 
 /// When the newest record named `name` in a binarycookies file was created.
 /// `None` if there is none or the file isn't binarycookies.
+pub fn created_at(file: &[u8], name: &str) -> Option<SystemTime> {
+    newest_created(file, |record_name| record_name == name.as_bytes())
+}
+
+/// When the newest record whose name starts with `prefix` was created (e.g.
+/// `/RobloxStudioAuth/oauth2RefreshToken` for any account's sign-in token).
+/// `None` if there is none or the file isn't binarycookies.
+pub fn newest_created_with_prefix(file: &[u8], prefix: &str) -> Option<SystemTime> {
+    newest_created(file, |record_name| record_name.starts_with(prefix.as_bytes()))
+}
+
+/// The newest creation date among records whose name matches.
 ///
 /// Layout: `cook`, a big-endian page count and page sizes, then pages. A page
 /// is a header, a little-endian record count and record offsets. A record has
 /// eight little-endian u32s (size, ?, flags, ?, then offsets of domain, name,
 /// path and value from the record start), an 8-byte marker, then the expiry
 /// and creation dates as little-endian f64 seconds since 2001-01-01.
-pub fn created_at(file: &[u8], name: &str) -> Option<SystemTime> {
+fn newest_created(file: &[u8], matches: impl Fn(&[u8]) -> bool) -> Option<SystemTime> {
     let be = |at: usize| Some(u32::from_be_bytes(file.get(at..at + 4)?.try_into().ok()?) as usize);
     let le = |bytes: &[u8], at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize);
     if file.get(..4)? != b"cook" {
@@ -51,7 +63,7 @@ pub fn created_at(file: &[u8], name: &str) -> Option<SystemTime> {
         for record_index in 0..le(page, 4)? {
             let record = page.get(le(page, 8 + 4 * record_index)?..)?;
             let record_name = record.get(le(record, 20)?..)?.split(|&b| b == 0).next()?;
-            if record_name != name.as_bytes() {
+            if !matches(record_name) {
                 continue;
             }
             let created = f64::from_le_bytes(record.get(48..56)?.try_into().ok()?);
@@ -124,5 +136,19 @@ mod tests {
         );
         assert_eq!(created_at(&file, "/RobloxStudioAuth/accessToken902015375"), None);
         assert_eq!(created_at(b"not a cookie store", "/RobloxStudioAuth/userid"), None);
+    }
+
+    #[test]
+    fn reads_the_newest_creation_date_by_prefix() {
+        let file = store(&[
+            ("/RobloxStudioAuth/oauth2RefreshToken111", 812_928_000.0),
+            ("/RobloxStudioAuth/userid", 812_929_999.0),
+            ("/RobloxStudioAuth/oauth2RefreshToken222", 812_928_754.0),
+        ]);
+        assert_eq!(
+            newest_created_with_prefix(&file, "/RobloxStudioAuth/oauth2RefreshToken"),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_235_954)),
+        );
+        assert_eq!(newest_created_with_prefix(&file, "/RobloxStudioAuth/accessToken"), None);
     }
 }

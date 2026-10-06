@@ -40,16 +40,23 @@ pub enum SignIn {
     /// A sign-in started and hasn't ended.
     InProgress,
     Succeeded,
-    /// The last sign-in failed (e.g. the saved sign-in expired). Studio is
-    /// showing its sign-in prompt and loads no plugins until someone signs in.
+    /// The last sign-in failed (e.g. the saved sign-in expired), or Studio had
+    /// no saved sign-in. Studio is showing its sign-in prompt and loads no
+    /// plugins until someone signs in.
     Failed,
 }
 
-/// Sign-in state from Studio's `[FLog::StudioKeyEvents] login` lines; the last
-/// one decides. After a failure, a later sign-in logs only its `[end]` line.
+/// Sign-in state from Studio's `[FLog::StudioKeyEvents] login` lines and its
+/// sign-in prompt (`[FLog::QuickSignInUtil] Starting awaitQuickSignIn`, logged
+/// only when the prompt shows); the last one decides. After a failure, a later
+/// sign-in logs only its `[end]` line.
 pub fn sign_in_state(log: &str) -> SignIn {
     let mut state = SignIn::NotStarted;
     for line in log.lines() {
+        if line.contains("[FLog::QuickSignInUtil] Starting awaitQuickSignIn") {
+            state = SignIn::Failed;
+            continue;
+        }
         let Some((_, event)) = line.split_once("[FLog::StudioKeyEvents] login") else { continue };
         state = if event.contains("[end][success]") {
             SignIn::Succeeded
@@ -138,6 +145,14 @@ mod tests {
         assert_eq!(sign_in_state(&[START, FAILURE, OTHER].join("\n")), SignIn::Failed);
         // Signing in at the prompt after an expired sign-in.
         assert_eq!(sign_in_state(&[START, FAILURE, SUCCESS].join("\n")), SignIn::Succeeded);
+    }
+
+    #[test]
+    fn the_sign_in_prompt_counts_as_failed_until_someone_signs_in() {
+        // With no saved sign-in, Studio shows the prompt without logging a failure.
+        const PROMPT: &str = "2026-10-06T05:21:12.003Z,1.003510,7013b000,6,Info [FLog::QuickSignInUtil] Starting awaitQuickSignIn via polling: code=MHJRYJ";
+        assert_eq!(sign_in_state(&[START, PROMPT].join("\n")), SignIn::Failed);
+        assert_eq!(sign_in_state(&[START, PROMPT, SUCCESS].join("\n")), SignIn::Succeeded);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::fflags::{self, FflagConfig, FflagHandle, FflagTarget};
-use crate::studio::layout;
+use crate::studio::{layout, sign_in};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,9 +175,13 @@ impl Studio {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let use_run_script = run_script_file.is_some();
+        // Held until this Studio's sign-in settles, so a renewal it makes
+        // reaches disk before the next Studio reads the token. Released at
+        // once if the launch fails.
+        let turn = sign_in::LaunchTurn::take();
         let spawned_at = std::time::SystemTime::now();
 
-        match target {
+        let studio = match target {
             PlaceTarget::PlaceId { place_id, universe_id } => {
                 if !matches!(opts.save, SaveMode::NoSave) {
                     bail!("save modes cannot be used with PlaceId targets (use Studio's publish flow for cloud places)");
@@ -208,7 +212,7 @@ impl Studio {
                     .context("failed to launch Studio")?;
 
                 let pid = handle.id();
-                Ok(Studio {
+                Studio {
                     handle: std::sync::Mutex::new(Some(handle)),
                     pid,
                     place_path: None,
@@ -220,7 +224,7 @@ impl Studio {
                     detached: opts.detached,
                     log_marker: run_script_file.clone(),
                     spawned_at,
-                })
+                }
             }
             PlaceTarget::File(ref path) => {
                 let place_path = PathBuf::from(path);
@@ -267,7 +271,7 @@ impl Studio {
                     .context("failed to launch Studio")?;
 
                 let pid = handle.id();
-                Ok(Studio {
+                Studio {
                     handle: std::sync::Mutex::new(Some(handle)),
                     pid,
                     place_path: Some(place_path),
@@ -279,7 +283,7 @@ impl Studio {
                     detached: opts.detached,
                     log_marker: run_script_file.clone().or(Some(place_str)),
                     spawned_at,
-                })
+                }
             }
             PlaceTarget::Content(_) => {
                 bail!("Content variant is for the multiplayer-test flow; use File or PlaceId for edit-mode launch");
@@ -303,7 +307,7 @@ impl Studio {
                     .context("failed to launch Studio")?;
 
                 let pid = handle.id();
-                Ok(Studio {
+                Studio {
                     handle: std::sync::Mutex::new(Some(handle)),
                     pid,
                     place_path: None,
@@ -315,9 +319,17 @@ impl Studio {
                     detached: opts.detached,
                     log_marker: run_script_file.clone(),
                     spawned_at,
-                })
+                }
             }
+        };
+
+        if let Some(turn) = turn {
+            let exited = std::sync::Arc::new(AtomicBool::new(false));
+            let on_exit = exited.clone();
+            studio.on_exit(move |_| on_exit.store(true, Ordering::Relaxed));
+            turn.end_after_sign_in(studio.log_marker.clone(), spawned_at, move || !exited.load(Ordering::Relaxed));
         }
+        Ok(studio)
     }
 
     /// Check if Studio process is still running.
@@ -518,44 +530,28 @@ impl Studio {
     }
 
     /// Wait until killing this Studio can't lose its sign-in (see
-    /// [`log::Credential`]), polling its log and Studio's cookie store: its
-    /// sign-in has ended, and any token it renewed is in the store on disk. A
-    /// kill before that signs the account out of every Studio. Gives up after
-    /// 20 s (a Studio stuck before it signs in). A launch with no log marker
-    /// can't be checked and is killed at once.
+    /// [`sign_in::wait_until_settled`]). A kill before that signs the account
+    /// out of every Studio. Gives up after 20 s (a Studio stuck before it
+    /// signs in). A launch with no log marker can't be checked and is killed
+    /// at once.
     fn wait_for_sign_in_to_settle(&self) {
-        use super::log;
         const MAX_WAIT: Duration = Duration::from_secs(20);
-        let (Some(dir), Some(marker)) = (crate::paths::roblox_logs_dir(), self.log_marker.as_deref()) else {
+        let Some(marker) = self.log_marker.as_deref() else {
             return;
         };
-        let give_up = Instant::now() + MAX_WAIT;
-        let mut waiting = false;
-        while self.alive() {
-            let state = log::find_log(&dir, marker, self.spawned_at)
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .map(|text| log::credential_state(&text));
-            let settled = match &state {
-                // No log yet, or no finished sign-in: Studio may be renewing the token.
-                None | Some(log::Credential::NotSignedIn | log::Credential::SigningIn) => false,
-                Some(log::Credential::Renewed { name, at }) => renewed_token_on_disk(name, *at),
-                Some(log::Credential::Settled) => true,
-            };
-            if settled {
-                if waiting {
-                    tracing::info!(pid = self.pid, "Studio's sign-in is saved; killing it");
-                }
-                return;
+        let mut waited = false;
+        let settle = sign_in::wait_until_settled(marker, self.spawned_at, MAX_WAIT, || self.alive(), |state| {
+            tracing::info!(pid = self.pid, ?state, "waiting for Studio to save its sign-in before killing it");
+            waited = true;
+        });
+        match settle {
+            sign_in::Settle::Settled if waited => {
+                tracing::info!(pid = self.pid, "Studio's sign-in is saved; killing it");
             }
-            if Instant::now() >= give_up {
+            sign_in::Settle::GaveUp(state) => {
                 tracing::warn!(pid = self.pid, ?state, "killing Studio before its sign-in settled; the next Studio may come up signed out");
-                return;
             }
-            if !waiting {
-                tracing::info!(pid = self.pid, ?state, "waiting for Studio to save its sign-in before killing it");
-                waiting = true;
-            }
-            std::thread::sleep(Duration::from_millis(200));
+            _ => {}
         }
     }
 
@@ -721,25 +717,6 @@ fn reap_test_children(edit_pid: u32) {
             .args(["process", "where", filter.as_str(), "call", "terminate"])
             .output();
         let _ = edit_pid;
-    }
-}
-
-/// Where Studio's cookie store can't be read (Windows), how long after a token
-/// renewal to assume Studio wrote it to disk. Measured at 2.4 s on macOS.
-const UNVERIFIED_SAVE_WAIT: Duration = Duration::from_secs(5);
-
-/// Whether the token Studio renewed at `at`, stored as cookie record `name`,
-/// is in its cookie store on disk.
-fn renewed_token_on_disk(name: &str, at: std::time::SystemTime) -> bool {
-    use super::cookies;
-    match cookies::store_path() {
-        // The store keeps whole seconds, so this save's record is created no
-        // earlier than `at` rounded down; the previous one is minutes older.
-        Some(path) => std::fs::read(path)
-            .ok()
-            .and_then(|file| cookies::created_at(&file, name))
-            .is_some_and(|created| created + Duration::from_secs(1) > at),
-        None => std::time::SystemTime::now() >= at + UNVERIFIED_SAVE_WAIT,
     }
 }
 
