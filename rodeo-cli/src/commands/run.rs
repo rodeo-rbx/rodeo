@@ -276,6 +276,13 @@ fn prepare_execution(args: RunArgs, resolved: ResolvedScript) -> Result<RunConfi
     let place_target = args.place.to_target()?;
     let should_launch = place_target.is_some();
 
+    // --save saves a Studio after the run: the one --place launches, or the
+    // one --studio-id/--dom-id pins the run to. With neither there is no
+    // Studio to save, and the flag used to be ignored with exit 0 (issue #7).
+    if args.place.save.is_some() && !should_launch && args.studio_id.is_none() && args.place.dom_id.is_none() {
+        bail!("--save needs a Studio to save: pass --place to launch one, or --studio-id/--dom-id to save the Studio the run is pinned to");
+    }
+
     // Always generate a run_id for correlation
     let _run_id = uuid::Uuid::new_v4().to_string().split('-').next().unwrap().to_string();
 
@@ -439,6 +446,13 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         Some(prefix) => Some(resolve_studio_id(&cfg.host, cfg.port, prefix).await?),
         None => launched_studio_id.clone().or(play_studio),
     };
+    // `--save` on a run pinned to a Studio it didn't launch saves that Studio
+    // after the run. Looked up now, so a Studio rodeo can't save (opened by
+    // hand, no session) fails the command before the script changes anything.
+    let pinned_save = match (&cfg.save, &launched_studio_id) {
+        (Some(_), None) => Some(pinned_save_target(&cfg.host, cfg.port, session.as_deref(), dom_id.as_deref()).await?),
+        _ => None,
+    };
 
     let is_profiling = cfg.profile.is_some();
     let request = RunRequest {
@@ -473,6 +487,8 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         };
         if let Some(ref sid) = launched_studio_id {
             finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, &r).await?;
+        } else if let Some(ref studio) = pinned_save {
+            save_pinned_studio(&cfg.host, cfg.port, studio, cfg.save.clone(), &r).await?;
         }
         drop(handle);
         r?
@@ -482,6 +498,8 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         // serve: save + close after the run (close skipped for --detach).
         if let Some(ref sid) = launched_studio_id {
             finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, &r).await?;
+        } else if let Some(ref studio) = pinned_save {
+            save_pinned_studio(&cfg.host, cfg.port, studio, cfg.save.clone(), &r).await?;
         }
         r?
     };
@@ -528,6 +546,54 @@ async fn finish_launched_studio(
         let _ = RodeoClient::connect(host, port)?.close_studio_raw(session_guid, saved).await;
     }
     Ok(())
+}
+
+/// The Studio a pinned run's `--save` saves: the `--studio-id` Studio
+/// (`studio_id`, already resolved), or the one holding the `--dom-id` DOM.
+async fn pinned_save_target(
+    host: &str,
+    port: u16,
+    studio_id: Option<&str>,
+    dom_id: Option<&str>,
+) -> Result<rodeo_proto::StudioState> {
+    let state = RodeoClient::connect(host, port)?.get_state().await?;
+    let studio = state.studios.into_iter().find(|st| {
+        studio_id.is_some_and(|id| st.studio_id == id)
+            || dom_id.is_some_and(|id| st.doms.iter().any(|d| d.dom_id == id))
+    });
+    let Some(studio) = studio else {
+        bail!("--save: the pinned Studio is no longer connected (see `rodeo state`)");
+    };
+    super::save::save_session(&studio).context("--save")?;
+    Ok(studio)
+}
+
+/// Post-run `--save` for a Studio the run is pinned to but did not launch
+/// (`--studio-id`, `--dom-id`): the same verified save and commit as
+/// `rodeo save <id> [--out <path>]`. A bare `--save` commits to the launch's
+/// source file, `--save <path>` to that path; a failed save fails the command.
+///
+/// Unlike a launched Studio, a pinned one is not saved after a failed run.
+/// It stays open with its changes, so skipping the save loses nothing, while
+/// saving would write whatever the failed script left half-done over the
+/// destination.
+async fn save_pinned_studio(
+    host: &str,
+    port: u16,
+    studio: &rodeo_proto::StudioState,
+    save: Option<String>,
+    run_result: &anyhow::Result<rodeo_client::RunResult>,
+) -> Result<()> {
+    let run_failed = run_result.as_ref().map(|r| r.exit_code != 0).unwrap_or(true);
+    if run_failed {
+        tracing::warn!(
+            "--save skipped: the run failed, so Studio {} keeps its unsaved changes",
+            &studio.studio_id[..8.min(studio.studio_id.len())]
+        );
+        return Ok(());
+    }
+    let out = save.filter(|path| !path.is_empty());
+    super::save::save_studio(&RodeoClient::connect(host, port)?, studio, out).await
 }
 
 

@@ -304,9 +304,12 @@ pub async fn run() {
             let mode = if master {
                 commands::serve::ServeMode::Master
             } else if studio_mode {
+                let master_port = master_port.unwrap_or(config::SERVE_PORT);
+                let serve = matches.subcommand_matches("serve").expect("matched Serve but no serve matches");
                 commands::serve::ServeMode::Studio {
+                    port: cli::studio_backend_port(serve, port, master_port),
                     master_host,
-                    master_port: master_port.unwrap_or(config::SERVE_PORT),
+                    master_port,
                 }
             } else {
                 commands::serve::ServeMode::Combined

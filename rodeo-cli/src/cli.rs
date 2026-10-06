@@ -55,7 +55,8 @@ pub enum Commands {
     /// Start persistent server (no Studio launch — use `run --place` for that)
     Serve {
         /// Master port. Resolution: this flag, then RODEO_PORT, then 44872.
-        /// The studio backend listens on port + 1.
+        /// The studio backend listens on port + 1. With --studio, the studio
+        /// backend's own port instead (default: --master-port + 1)
         #[arg(long, env = "RODEO_PORT")]
         port: Option<u16>,
 
@@ -276,6 +277,18 @@ pub enum Commands {
     },
 }
 
+/// The port a `serve --studio` backend listens on: `--port` when typed on the
+/// command line, otherwise master port + 1, where a full serve puts its studio
+/// backend and where that serve's plugin connects. The parsed `--port` can't
+/// be used as-is: the flag also reads RODEO_PORT, which names the master's
+/// port, so `serve --studio` used to try to bind the master's port (issue #7).
+pub fn studio_backend_port(serve: &clap::ArgMatches, port: Option<u16>, master_port: u16) -> u16 {
+    match (serve.value_source("port"), port) {
+        (Some(clap::parser::ValueSource::CommandLine), Some(port)) => port,
+        _ => master_port.saturating_add(1),
+    }
+}
+
 /// Shared args for connecting to a running rodeo server
 #[derive(clap::Args, Clone)]
 pub struct ServerArgs {
@@ -328,7 +341,9 @@ pub struct PlaceArgs {
     #[arg(long = "profile", num_args = 0..=1, default_missing_value = "", help_heading = "Profiling")]
     pub profile: Option<String>,
 
-    /// Save Studio place on exit, optionally to a specific path
+    /// Save Studio place on exit, optionally to a specific path. With
+    /// --studio-id/--dom-id instead of --place, saves that Studio after a
+    /// successful run, like `rodeo save <id> [--out <path>]`
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
     pub save: Option<String>,
 }
@@ -412,6 +427,30 @@ mod port_resolution_tests {
             Commands::State { server, .. } => assert_eq!(server.port, 46200),
             _ => unreachable!(),
         }
+
+        // `serve --studio`: RODEO_PORT names the master, so the backend
+        // listens one above it unless --port is typed.
+        assert_eq!(serve_studio_port(&["--studio"]), 46124);
+        assert_eq!(serve_studio_port(&["--studio", "--master-port", "46200"]), 46201);
+        assert_eq!(serve_studio_port(&["--studio", "--port", "46300"]), 46300);
         std::env::remove_var("RODEO_PORT");
+        assert_eq!(serve_studio_port(&["--studio"]), config::SERVE_PORT + 1);
+        assert_eq!(serve_studio_port(&["--studio", "--port", "0"]), 0);
+    }
+
+    /// The port `rodeo serve <args>` gives its studio backend in --studio mode.
+    fn serve_studio_port(args: &[&str]) -> u16 {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = Cli::command()
+            .try_get_matches_from(["rodeo", "serve"].iter().chain(args))
+            .unwrap();
+        match Cli::from_arg_matches(&matches).unwrap().command {
+            Commands::Serve { port, master_port, .. } => studio_backend_port(
+                matches.subcommand_matches("serve").unwrap(),
+                port,
+                master_port.unwrap_or(config::SERVE_PORT),
+            ),
+            _ => unreachable!(),
+        }
     }
 }

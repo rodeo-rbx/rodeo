@@ -100,7 +100,7 @@ Run a script in Studio.
 - `--focus` — bring Studio to the front on launch (default: background). Studio takes keyboard focus only if it opens on the display you're working on; on another display it's raised there and your focus stays where it is
 - Without `--focus`, Studio stays in the background on every display: it opens without activating, and when it activates itself (Studio does this as a test session starts or ends) rodeo hands focus straight back to the app you were in — unless you switched to Studio yourself (click or ⌘-Tab)
 - `--show-widgets <spec>` — allow-list of Studio dock widgets to keep; everything else (panels, ribbon, command bar) is hidden. `none` hides all; a comma list keeps those (aliases: output, explorer, properties, editor, toolbox, assistant, ribbon, commandbar, rodeo — this serve's own panel; or a raw panel ID). Restored on exit
-- `--save [path]` — save the place after the run; a missed save is a nonzero exit, never silent. Bare `--save` opens the source file directly and saves into it; `--save <path>` saves to that path. With `--detach`, saves at run end and leaves Studio open
+- `--save [path]` — save the place after the run; a missed save is a nonzero exit, never silent. Bare `--save` opens the source file directly and saves into it; `--save <path>` saves to that path. With `--detach`, saves at run end and leaves Studio open. With `--studio-id`/`--dom-id` instead of `--place`, saves that Studio after a successful run the way `rodeo save <id> [--out <path>]` does (bare `--save`: back to its SOURCE_PATH); a failed run skips the save. With none of the three, `--save` is an error
 - `--profile [dir]` — enable microprofiler auto-capture and collect dumps (optional output directory)
 - `--sourcemap <path>` — path to sourcemap.json for instance resolution
 - `--host <host>` / `--port <port>` — server address (port resolution: the flag, then `RODEO_PORT`, then 44872)
@@ -345,7 +345,8 @@ selects XML or binary output.
 
 `exportEditableImage` and `importEditableImage` move pixels between PNG files
 and `EditableImage` objects, which `exportInstances` cannot serialize (an Object-backed
-image content is written as an empty reference). Export supports `.png` only;
+content is written as an empty reference; the export warns, naming each such
+property). Export supports `.png` only;
 import reads PNG and JPEG. Studio bounds EditableImage dimensions and the
 import errors with the size if it refuses one.
 

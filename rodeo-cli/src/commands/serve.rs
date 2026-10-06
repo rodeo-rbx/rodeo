@@ -20,8 +20,8 @@ pub enum ServeMode {
     Combined,
     /// Master only — accepts backends + CLI clients
     Master,
-    /// Studio backend only — connects outbound to master
-    Studio { master_host: String, master_port: u16 },
+    /// Studio backend only — connects outbound to master; listens on `port`
+    Studio { port: u16, master_host: String, master_port: u16 },
 }
 
 /// Ensure MCP Server is enabled in Studio's AI Assistant settings for all users.
@@ -421,9 +421,8 @@ pub async fn main(
             let handle = start_full_serve(port).await?;
             handle.wait_for_shutdown().await;
         }
-        ServeMode::Studio { master_host, master_port } => {
-            let local_port = port.unwrap_or(config::SERVE_PORT);
-            run_studio_backend(local_port, &master_host, master_port).await?;
+        ServeMode::Studio { port, master_host, master_port } => {
+            run_studio_backend(port, &master_host, master_port).await?;
         }
     }
 

@@ -26,7 +26,85 @@ return function(rpc, fs, stream, normalize, serializeToLuau, runtime, createScen
 		return SerializationService:DeserializeInstancesAsync(data)
 	end
 
+	-- Content properties that can reference an in-memory EditableMesh or
+	-- EditableImage (`Content.fromObject`), keyed by the class declaring them.
+	-- SerializationService writes such a reference as empty, so an export
+	-- that holds one "succeeds" and reloads as placeholder geometry or a blank
+	-- image (issue #7). A name a Studio build lacks is skipped.
+	local objectContentProperties: { [string]: { string } } = {
+		MeshPart = { "MeshContent", "TextureContent" },
+		SurfaceAppearance = {
+			"ColorMapContent",
+			"NormalMapContent",
+			"RoughnessMapContent",
+			"MetalnessMapContent",
+			"EmissiveMaskContent",
+		},
+		Decal = { "TextureContent" },
+		ImageLabel = { "ImageContent" },
+		ImageButton = { "ImageContent", "HoverImageContent", "PressedImageContent" },
+		BaseWrap = { "CageMeshContent" },
+		WrapLayer = { "ReferenceMeshContent" },
+	}
+	local propertiesByClass: { [string]: { string } } = {}
+	local function contentPropertiesOf(instance: Instance): { string }
+		local cached = propertiesByClass[instance.ClassName]
+		if cached then
+			return cached
+		end
+		local names = {}
+		for class, properties in objectContentProperties do
+			if instance:IsA(class) then
+				for _, name in properties do
+					if pcall(function()
+						return (instance :: any)[name]
+					end) then
+						table.insert(names, name)
+					end
+				end
+			end
+		end
+		propertiesByClass[instance.ClassName] = names
+		return names
+	end
+
+	-- `Instance.Property (ObjectClass)` for every in-memory content reference
+	-- in `instances` and their descendants.
+	local function objectContentIn(instances: { Instance }): { string }
+		local found = {}
+		local function visit(instance: Instance)
+			for _, name in contentPropertiesOf(instance) do
+				local ok, content = pcall(function()
+					return (instance :: any)[name]
+				end)
+				if ok and typeof(content) == "Content" and content.SourceType == Enum.ContentSourceType.Object then
+					local okClass, className = pcall(function()
+						return content.Object.ClassName
+					end)
+					table.insert(found, `{instance:GetFullName()}.{name} ({if okClass then className else "Object"})`)
+				end
+			end
+		end
+		for _, root in instances do
+			visit(root)
+			for _, descendant in root:GetDescendants() do
+				visit(descendant)
+			end
+		end
+		return found
+	end
+
 	function roblox.exportInstances(path: string, instances: { Instance })
+		local lost = objectContentIn(instances)
+		if #lost > 0 then
+			local shown = table.concat(lost, ", ", 1, math.min(#lost, 5))
+			local more = if #lost > 5 then `, and {#lost - 5} more` else ""
+			warn(
+				`[rodeo] roblox.exportInstances({path}): .rbxm/.rbxmx cannot store in-memory EditableMesh/EditableImage `
+					.. `content (Content.fromObject); {#lost} reference(s) export empty: {shown}{more}. `
+					.. `Export those objects with roblox.exportEditableMesh / roblox.exportEditableImage.`
+			)
+		end
 		local buf = SerializationService:SerializeInstancesAsync(instances)
 		local h = fs.open(path, "w")
 		stream.writeBytes(h, buf)

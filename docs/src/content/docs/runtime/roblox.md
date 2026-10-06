@@ -552,6 +552,18 @@ error instead of silently corrupting motion. No animations are published.
 
 Exports `instances` as a `.rbxm` or `.rbxmx` model file at `path`.
 
+Neither format stores an in-memory `EditableMesh` or `EditableImage`: a
+
+`Content.fromObject` reference (for example a `MeshPart` made with
+
+`AssetService:CreateMeshPartAsync(Content.fromObject(mesh))`) exports
+
+empty. The export still succeeds and warns, naming each such property;
+
+export those objects with `roblox.exportEditableMesh` or
+
+`roblox.exportEditableImage`.
+
 ```luau
 (path: string, instances: { Instance }) -> ()
 ```

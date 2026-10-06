@@ -32,7 +32,7 @@ Start persistent server (no Studio launch — use `run --place` for that)
 
 ###### **Options:**
 
-* `--port <PORT>` — Master port. Resolution: this flag, then RODEO_PORT, then 44872. The studio backend listens on port + 1
+* `--port <PORT>` — Master port. Resolution: this flag, then RODEO_PORT, then 44872. The studio backend listens on port + 1. With --studio, the studio backend's own port instead (default: --master-port + 1)
 * `--master` — Run as master only (central orchestrator)
 * `--studio` — Run as studio backend only (connects to master)
 * `--master-host <MASTER_HOST>` — Master host to connect to (for --studio)
@@ -94,7 +94,7 @@ Run a script in Studio
 * `--detach` — Keep Studio/Player running after rodeo exits
 * `--show-widgets <WIDGETS>` — Allow-list of Studio dock widgets to keep visible; everything else (panels, ribbon, command bar) is hidden. `none` hides all; a comma list keeps those (aliases: output, explorer, properties, editor, toolbox, assistant, ribbon, commandbar, rodeo (this serve's own panel); or a raw panel ID). Restored on exit
 * `--profile <PROFILE>` — Enable microprofiler auto-capture and collect dumps (optional: output directory)
-* `--save <SAVE>` — Save Studio place on exit, optionally to a specific path
+* `--save <SAVE>` — Save Studio place on exit, optionally to a specific path. With --studio-id/--dom-id instead of --place, saves that Studio after a successful run, like `rodeo save <id> [--out <path>]`
 * `--fflag.override <KEY=VALUE>` — Set FFlag override (Key=Value, repeatable)
 * `--fflag.file <PATH>` — Load FFlag overrides from a JSON file
 

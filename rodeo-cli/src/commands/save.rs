@@ -39,10 +39,26 @@ pub async fn main(id: Option<&str>, host: &str, port: u16, out: Option<String>) 
                 .join(", ")
         ),
     };
+    save_studio(&client, studio, out).await
+}
+
+/// The launch session rodeo saves `studio` through. Only Studios rodeo
+/// launched have one.
+pub(crate) fn save_session(studio: &rodeo_proto::StudioState) -> Result<String> {
+    match studio.session_id.clone() {
+        Some(session_guid) => Ok(session_guid),
+        None => bail!(
+            "Studio {} was not launched by rodeo (no session) — save it from Studio directly",
+            short(&studio.studio_id)
+        ),
+    }
+}
+
+/// Save `studio` and commit the saved file to `out`, else to the launch's
+/// SOURCE_PATH. Shared by `rodeo save` and `rodeo run --studio-id … --save`.
+pub(crate) async fn save_studio(client: &RodeoClient, studio: &rodeo_proto::StudioState, out: Option<String>) -> Result<()> {
     let studio_short = short(&studio.studio_id);
-    let Some(session_guid) = studio.session_id.clone() else {
-        bail!("Studio {studio_short} was not launched by rodeo (no session) — save it from Studio directly");
-    };
+    let session_guid = save_session(studio)?;
 
     // Backend fires the AX save and confirms via working-file mtime change
     // (retrying up to 60s); a failure here is a hard error, never a silent
