@@ -1341,10 +1341,10 @@ fn proc_argv(pid: i32) -> Option<Vec<String>> {
     Some(args)
 }
 
-/// See [`crate::running_instance_cmdlines`]. Enumerates the bundle's running
+/// See [`crate::running_instances`]. Enumerates the bundle's running
 /// instances the same way `spawn_piped` does and reads each argv via
 /// `proc_argv`.
-pub(crate) fn running_instance_cmdlines(app_path: &std::path::Path) -> Vec<String> {
+pub(crate) fn running_instances(app_path: &std::path::Path) -> Vec<(u32, String)> {
     let Some(bundle_path) = find_app_bundle(app_path) else { return Vec::new() };
     let Some(bundle_id) = bundle_id_from_path(&bundle_path) else { return Vec::new() };
     let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(
@@ -1353,8 +1353,7 @@ pub(crate) fn running_instance_cmdlines(app_path: &std::path::Path) -> Vec<Strin
     apps.iter()
         .map(|app| app.processIdentifier())
         .filter(|&pid| pid > 0)
-        .filter_map(proc_argv)
-        .map(|argv| argv.join(" "))
+        .filter_map(|pid| Some((pid as u32, proc_argv(pid)?.join(" "))))
         .collect()
 }
 

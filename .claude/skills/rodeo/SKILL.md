@@ -56,9 +56,11 @@ at the same time:
   `ps -eo pid,command | grep "RobloxStudio -task"` prints
   `-localPlaceFile .../.rodeo/.temp/rodeo-<uuid>.rbxl`. Match the uuid to your
   own launch.
-- `rodeo kill <studio-id>` closes Studios that the current serve launched. For
-  a leftover Studio from an earlier serve, kill its pid instead. Studio ignores
-  SIGTERM, so send SIGKILL.
+- `rodeo kill <studio-id>` closes Studios rodeo launched on the serve's port,
+  including a `--detach` Studio an earlier serve on that port left running:
+  the current serve takes it over when its plugin reconnects. For any other
+  leftover Studio, kill its pid instead. Studio ignores SIGTERM, so send
+  SIGKILL.
 - **Give each harness its own port** (`rodeo serve --port <n>`, or `RODEO_PORT`
   in the project's `.mise.toml`/`.env`). Two agents on one port route runs into
   each other's sessions. Serves on different ports are fully independent —

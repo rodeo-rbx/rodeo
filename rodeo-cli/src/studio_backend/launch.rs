@@ -184,6 +184,27 @@ impl Studio {
         })
     }
 
+    /// Take over a `--detach` Studio an earlier serve on this port launched
+    /// and left running (see `adopt`). The place it was asked to open isn't
+    /// on its command line, so only the working path is known.
+    pub fn adopt(session_guid: &str, found: crate::studio_backend::adopt::Detached) -> Self {
+        // The bootstrap is written just before the launch, so the Studio's
+        // log is newer than it.
+        let spawned_at = std::fs::metadata(&found.bootstrap)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        Studio {
+            session_guid: session_guid.to_string(),
+            inner: rbx_control::studio::launch::Studio::adopt(
+                found.pid,
+                Some(found.bootstrap.to_string_lossy().into_owned()),
+                spawned_at,
+            ),
+            source_path: None,
+            working_path: found.working_path,
+        }
+    }
+
     pub fn source_path(&self) -> Option<&str> { self.source_path.as_deref() }
     pub fn working_path(&self) -> Option<&str> { self.working_path.as_deref() }
 

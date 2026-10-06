@@ -332,6 +332,32 @@ impl Studio {
         Ok(studio)
     }
 
+    /// Take over a Studio that is already running, launched with `detached:
+    /// true` by a process that has since exited. `log_marker` and
+    /// `spawned_at` are as for a spawned Studio (they find its log, to let
+    /// its sign-in settle before a kill).
+    ///
+    /// There is no process handle: `kill()` goes by pid, and `save()`,
+    /// `focus()` and `on_exit()` are unavailable. The launch's save mode is
+    /// unknown — the file it has open may be the user's own place — so
+    /// nothing is saved or deleted, and the handle counts as detached:
+    /// dropping it leaves the process running.
+    pub fn adopt(pid: u32, log_marker: Option<String>, spawned_at: std::time::SystemTime) -> Self {
+        Studio {
+            handle: std::sync::Mutex::new(None),
+            pid,
+            place_path: None,
+            save_mode: SaveMode::NoSave,
+            fflag_handle: None,
+            layout_handle: None,
+            saved: AtomicBool::new(false),
+            cleaned: AtomicBool::new(false),
+            detached: true,
+            log_marker,
+            spawned_at,
+        }
+    }
+
     /// Check if Studio process is still running.
     pub fn is_running(&self) -> bool {
         match self.handle.lock().unwrap().as_mut() {
@@ -523,8 +549,10 @@ impl Studio {
         }
         #[cfg(not(unix))]
         {
-            self.handle.try_lock().map_or(true, |mut handle| {
-                handle.as_mut().is_some_and(|h| h.try_wait().ok().map_or(true, |status| status.is_none()))
+            self.handle.try_lock().map_or(true, |mut handle| match handle.as_mut() {
+                Some(h) => h.try_wait().ok().map_or(true, |status| status.is_none()),
+                // Adopted: no handle to wait on.
+                None => crate::pid_alive(self.pid),
             })
         }
     }
@@ -575,8 +603,16 @@ impl Studio {
             libc::kill(self.pid as i32, libc::SIGKILL);
         }
         #[cfg(not(unix))]
-        if let Some(ref mut handle) = *self.handle.lock().unwrap() {
-            let _ = handle.kill();
+        match *self.handle.lock().unwrap() {
+            Some(ref mut handle) => {
+                let _ = handle.kill();
+            }
+            // Adopted: no handle, so by pid.
+            None => {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &self.pid.to_string()])
+                    .output();
+            }
         }
     }
 

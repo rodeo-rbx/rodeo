@@ -15,7 +15,11 @@ use tracing::{info, debug, Instrument};
 /// matching `StudioInstanceInfo` (keyed by session_guid), stamps the DOM
 /// synchronously, and transitions the instance to "connected". Returns
 /// true if the session was stamped.
-fn try_claim_session_from_handshake(guard: &mut crate::master::BackendState, dom_id: &str) -> bool {
+fn try_claim_session_from_handshake(
+    guard: &mut crate::master::BackendState,
+    state: &SharedBackendState,
+    dom_id: &str,
+) -> bool {
     let already_stamped = guard.doms.get(dom_id)
         .map(|dom| dom.session_guid.is_some())
         .unwrap_or(false);
@@ -23,11 +27,13 @@ fn try_claim_session_from_handshake(guard: &mut crate::master::BackendState, dom
     let Some(reported) = guard.doms.get(dom_id)
         .and_then(|dom| dom.state.as_ref())
         .and_then(|s| s.session_guid.clone())
+        .filter(|s| !s.is_empty())
     else { return false; };
 
     // Plugin self-reports an id it baked in at install time. Trust it iff
-    // we actually spawned something with that id (studio_instances).
-    let matched = guard.studio_instances.contains_key(&reported);
+    // we actually spawned something with that id (studio_instances), or an
+    // earlier serve on this port did and left it running.
+    let matched = guard.studio_instances.contains_key(&reported) || adopt_detached(guard, state, &reported);
     if !matched { return false; }
 
     if let Some(inst) = guard.studio_instances.get_mut(&reported) {
@@ -41,6 +47,25 @@ fn try_claim_session_from_handshake(guard: &mut crate::master::BackendState, dom
     if let Some(ref notify) = guard.snapshot_trigger {
         notify.notify_one();
     }
+    true
+}
+
+/// A session this serve never launched can still be this port's: a
+/// `--detach` Studio an earlier serve here launched and left running when it
+/// exited (#35). Take it over, so `rodeo kill` and `rodeo state` treat it
+/// like a Studio this serve launched. Returns whether it was adopted.
+fn adopt_detached(guard: &mut crate::master::BackendState, state: &SharedBackendState, session_guid: &str) -> bool {
+    let Some(found) = super::adopt::find(session_guid, guard.port) else { return false };
+    let pid = found.pid;
+    info!(session_guid, pid, "adopting a detached Studio an earlier serve on this port launched");
+    guard.studio_instances.insert(session_guid.to_string(), crate::master::StudioInstanceInfo {
+        session_guid: session_guid.to_string(),
+        status: "connected".to_string(),
+        studio: Some(std::sync::Arc::new(super::Studio::adopt(session_guid, found))),
+        error: None,
+        mcp_studio_id: None,
+    });
+    super::adopt::watch_exit(state.clone(), session_guid.to_string(), pid);
     true
 }
 
@@ -244,7 +269,7 @@ pub async fn handle_studio_client<S, R>(
         // DOM un-stamped. It still connects; it just isn't scoped to a session
         // for routing. Published-place launches where the plugin IS rodeo-
         // installed always send the guid, so this covers only manual installs.
-        let _ = try_claim_session_from_handshake(&mut *guard, &dom_id);
+        let _ = try_claim_session_from_handshake(&mut *guard, &state, &dom_id);
 
         // A DOM connecting is a moment Studio activates itself: the edit DOM
         // as Studio comes up, a server/client DOM as a session starts. Arm
@@ -378,7 +403,7 @@ async fn handle_plugin_message(
             // Subsequent-update path: if the DOM wasn't stamped at handshake
             // (older plugin, or the session_guid field arrived in a later
             // update), retry the handshake claim here.
-            try_claim_session_from_handshake(&mut *guard, dom_id);
+            try_claim_session_from_handshake(&mut *guard, state, dom_id);
 
             guard.process_pending();
 

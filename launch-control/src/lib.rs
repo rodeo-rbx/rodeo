@@ -773,13 +773,19 @@ pub(crate) static HELPER_INVOCATION: std::sync::OnceLock<HelperInvocation> = std
 /// spaces, so callers looking for one argument should match a distinctive
 /// shape rather than split on whitespace. Empty on other platforms.
 pub fn running_instance_cmdlines(app_path: &Path) -> Vec<String> {
+    running_instances(app_path).into_iter().map(|(_, cmdline)| cmdline).collect()
+}
+
+/// [`running_instance_cmdlines`] with each process's pid: `(pid, command
+/// line)` pairs, for callers that need to act on the process they find.
+pub fn running_instances(app_path: &Path) -> Vec<(u32, String)> {
     #[cfg(target_os = "macos")]
     {
-        return macos::running_instance_cmdlines(app_path);
+        return macos::running_instances(app_path);
     }
     #[cfg(target_os = "windows")]
     {
-        return windows::running_instance_cmdlines(app_path);
+        return windows::running_instances(app_path);
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
