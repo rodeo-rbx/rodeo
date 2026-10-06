@@ -106,7 +106,9 @@ local function metadata(path: string)
 	}
 end
 
-return {
+-- Members the shim does not provide raise an error naming them, instead of
+-- indexing to nil and failing later as "attempt to call a nil value".
+return setmetatable({
 	readFile = readFile,
 	writeFile = writeFile,
 	isFile = isFile,
@@ -118,4 +120,8 @@ return {
 	copy = copy,
 	move = move,
 	metadata = metadata,
-}
+}, {
+	__index = function(_, key)
+		error(`@lune/fs.{key} is not supported by rodeo's Lune adapter`, 2)
+	end,
+})

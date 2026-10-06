@@ -528,10 +528,13 @@ the I/O:
 ```lua
 require("@lune/fs")       -- readFile/writeFile/isFile/isDir/readDir/remove*/writeDir/copy/move/metadata
 require("@lune/process")  -- args, env, cwd, exit, os, exec (no create)
-require("@lune/serde")    -- encode/decode
+require("@lune/serde")    -- encode/decode (json only)
 require("@lune/stdio")    -- write/ewrite
 require("@lune/task")     -- Roblox task, wait/delay clamped to lune's out-of-range handling
 ```
+
+Any other member (`serde.hash`, `process.create`, `stdio.format`, ...) raises
+`@lune/<module>.<name> is not supported by rodeo's Lune adapter` when accessed.
 
 This also solves the wally/roblox-target package wall, where instance-path
 requires cannot bundle (issue #6): **pesde packages published with a `lune`

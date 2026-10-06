@@ -84,7 +84,14 @@ local function exec(program: string, params: { string }?, options: { [string]: a
 	})
 end
 
-return {
+-- Unsupported members that have an @rodeo/process equivalent.
+local REPLACEMENTS = {
+	create = "@rodeo/process create",
+}
+
+-- Members the shim does not provide raise an error naming them, instead of
+-- indexing to nil and failing later as "attempt to call a nil value".
+return setmetatable({
 	-- lune's args are read-only (writes must error mentioning read-only);
 	-- freeze a clone so the shared @rodeo args table stays untouched.
 	args = table.freeze(table.clone(g.process.args)),
@@ -93,4 +100,10 @@ return {
 	exit = g.process.exit,
 	exec = exec,
 	os = platform,
-}
+}, {
+	__index = function(_, key)
+		local replacement = REPLACEMENTS[key]
+		local suffix = if replacement then `; use {replacement}` else ""
+		error(`@lune/process.{key} is not supported by rodeo's Lune adapter{suffix}`, 2)
+	end,
+})

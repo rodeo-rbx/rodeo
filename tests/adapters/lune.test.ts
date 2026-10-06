@@ -188,3 +188,52 @@ describe("lune conformance", () => {
     );
   }
 });
+
+// A member a shim does not provide must raise an error naming it, not index
+// to nil and fail later as "attempt to call a nil value" (issue #37).
+const UNSUPPORTED_SOURCE = `
+local modules = {
+	fs = require("@lune/fs"),
+	process = require("@lune/process"),
+	serde = require("@lune/serde"),
+	stdio = require("@lune/stdio"),
+	task = require("@lune/task"),
+}
+local function expectError(fn, expected)
+	local ok, err = pcall(fn)
+	assert(not ok and string.find(tostring(err), expected, 1, true), \`expected "{expected}", got: {err}\`)
+end
+for name, module in modules do
+	expectError(function()
+		return module.missingMember
+	end, \`@lune/{name}.missingMember is not supported by rodeo's Lune adapter\`)
+end
+expectError(function()
+	return modules.serde.hash("sha256", "abc")
+end, "@lune/serde.hash is not supported by rodeo's Lune adapter")
+expectError(function()
+	return modules.process.create
+end, "@lune/process.create is not supported by rodeo's Lune adapter; use @rodeo/process create")
+expectError(function()
+	return modules.serde.encode("toml", {})
+end, '@lune/serde.encode format "toml" is not supported by rodeo\\'s Lune adapter (only "json" is)')
+assert(modules.serde.decode("json", modules.serde.encode("json", { ok = true })).ok)
+`;
+
+describe("lune adapter unsupported members", () => {
+  it(
+    "raise an error naming the member",
+    () => {
+      const cwd = mkdtempSync(join(tmpdir(), "rodeo-lune-unsupported-"));
+      scratchDirs.push(cwd);
+      const proc = Bun.spawnSync(
+        [RODEO, "run", "--source", UNSUPPORTED_SOURCE, "--port", String(PORT)],
+        { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
+      );
+      const stdout = proc.stdout?.toString() ?? "";
+      const stderr = proc.stderr?.toString() ?? "";
+      expect(proc.exitCode, `--- stdout:\n${stdout}\n--- stderr:\n${stderr}`).toBe(0);
+    },
+    120_000,
+  );
+});

@@ -9,7 +9,9 @@ local function clampDuration(t: number?): number
 	return t
 end
 
-return {
+-- Members the shim does not provide raise an error naming them, instead of
+-- indexing to nil and failing later as "attempt to call a nil value".
+return setmetatable({
 	cancel = task.cancel,
 	defer = task.defer,
 	spawn = task.spawn,
@@ -19,4 +21,8 @@ return {
 	wait = function(duration: number?): number
 		return task.wait(clampDuration(duration))
 	end,
-}
+}, {
+	__index = function(_, key)
+		error(`@lune/task.{key} is not supported by rodeo's Lune adapter`, 2)
+	end,
+})
