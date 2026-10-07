@@ -566,10 +566,7 @@ pub(crate) async fn build_launch_request(
     host: &str,
     port: u16,
 ) -> Result<rodeo_proto::LaunchStudioRequest> {
-    // Find the studio backend to target
-    let backends = RodeoClient::connect(host, port)?.list_backends(None).await?;
-    let studio_backend = backends.iter().find(|b| b.kind == "studio")
-        .ok_or_else(|| anyhow::anyhow!("no studio backend registered"))?;
+    let studio_backend = wait_for_studio_backend(host, port).await?;
 
     Ok(rodeo_proto::LaunchStudioRequest {
         backend: studio_backend.id.clone(),
@@ -590,6 +587,61 @@ pub(crate) async fn build_launch_request(
         fflag_file: fflags.fflag_file,
         ..Default::default()
     })
+}
+
+/// How long a launch waits for the serve's studio backend to register. A serve
+/// answers on its master port about 100 ms before its studio backend registers,
+/// so a run submitted right after `rodeo serve` starts lands in that gap
+/// (issue #30). A backend still missing after this is not coming.
+const STUDIO_BACKEND_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const STUDIO_BACKEND_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The studio backend registered with the master on `host:port`, waiting up to
+/// `STUDIO_BACKEND_WAIT` for one to appear.
+async fn wait_for_studio_backend(host: &str, port: u16) -> Result<rodeo_proto::BackendInfo> {
+    let client = RodeoClient::connect(host, port)?;
+    poll_studio_backend(|| client.list_backends(Some("studio")), STUDIO_BACKEND_WAIT, STUDIO_BACKEND_POLL)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!(no_studio_backend_message(host, port, STUDIO_BACKEND_WAIT)))
+}
+
+/// Poll `list` every `every` until it returns a studio backend (`Some`) or
+/// `wait` elapses (`None`). A failing `list` (master gone) fails at once.
+async fn poll_studio_backend<F, Fut>(
+    mut list: F,
+    wait: std::time::Duration,
+    every: std::time::Duration,
+) -> Result<Option<rodeo_proto::BackendInfo>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<rodeo_proto::BackendInfo>>>,
+{
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if let Some(b) = list().await?.into_iter().find(|b| b.kind == "studio") {
+            return Ok(Some(b));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
+/// The error for a serve whose master answers but has no studio backend:
+/// either the backend died (the master outlives it) or it never started. The
+/// master still holds the port, so a plain `rodeo serve` would fail to bind;
+/// name both ways out.
+fn no_studio_backend_message(host: &str, port: u16, waited: std::time::Duration) -> String {
+    let master_host = if host == "localhost" { String::new() } else { format!(" --master-host {host}") };
+    format!(
+        "the rodeo serve on {host}:{port} has no studio backend (its master answers, but no studio \
+         backend registered within {}s). Stop that serve and start it again with \
+         `rodeo serve --port {port}`, or attach a studio backend to it with \
+         `rodeo serve --studio{master_host} --master-port {port} --port {}`",
+        waited.as_secs(),
+        port.saturating_add(1),
+    )
 }
 
 /// Placeholder retained for the play call sites. Multiplayer-test DOMs are now
@@ -661,7 +713,10 @@ async fn launch_play_processes(
 
     // Open the edit Studio (profile=true so the multiplayer-test child
     // DataModels inherit the profiler FFlags), then start the in-Studio test.
-    let backend = client.get_local_studio().await?;
+    // Bounded wait: `get_local_studio` polls forever, which hangs the run when
+    // the serve's backend is dead.
+    let backend_info = wait_for_studio_backend(host, port).await?;
+    let backend = client.get_backend(&backend_info.id).await?;
     let fflag_overrides = fflags.fflag_override.clone();
     let fflag_file = fflags.fflag_file.clone();
     tracing::info!(dom = route.dom_kind.as_str(), initial_clients, "opening edit Studio for multiplayer test");
@@ -714,3 +769,77 @@ async fn wait_for_play_session(client: &RodeoClient, clients: u32) -> Result<()>
     }
 }
 
+#[cfg(test)]
+mod studio_backend_wait_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn backend(kind: &str) -> rodeo_proto::BackendInfo {
+        rodeo_proto::BackendInfo { id: format!("{kind}-id"), kind: kind.to_string(), ..Default::default() }
+    }
+
+    // A serve's master answers before its studio backend registers: the first
+    // polls see no backend, a later one does (issue #30).
+    #[tokio::test]
+    async fn waits_for_a_backend_that_registers_late() {
+        let calls = std::cell::Cell::new(0);
+        let found = poll_studio_backend(
+            || {
+                calls.set(calls.get() + 1);
+                let n = calls.get();
+                async move { Ok(if n < 4 { vec![] } else { vec![backend("player"), backend("studio")] }) }
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.map(|b| b.id), Some("studio-id".to_string()));
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_wait() {
+        let start = std::time::Instant::now();
+        let found = poll_studio_backend(
+            || async { Ok(vec![backend("player")]) },
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap();
+        assert!(found.is_none());
+        assert!(start.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn a_master_error_fails_at_once() {
+        let calls = std::cell::Cell::new(0);
+        let err = poll_studio_backend(
+            || {
+                calls.set(calls.get() + 1);
+                async { Err::<Vec<rodeo_proto::BackendInfo>, _>(anyhow::anyhow!("list_backends failed: connection refused")) }
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("connection refused"));
+        assert_eq!(calls.get(), 1);
+    }
+
+    // The message names the recovery commands for the port in use; a plain
+    // `rodeo serve` alone would fail to bind the port the master still holds.
+    #[test]
+    fn missing_backend_message_names_the_recovery() {
+        let msg = no_studio_backend_message("localhost", 44960, Duration::from_secs(5));
+        assert!(msg.contains("the rodeo serve on localhost:44960 has no studio backend"), "{msg}");
+        assert!(msg.contains("within 5s"), "{msg}");
+        assert!(msg.contains("`rodeo serve --port 44960`"), "{msg}");
+        assert!(msg.contains("`rodeo serve --studio --master-port 44960 --port 44961`"), "{msg}");
+
+        let remote = no_studio_backend_message("10.0.0.2", 44872, Duration::from_secs(5));
+        assert!(remote.contains("`rodeo serve --studio --master-host 10.0.0.2 --master-port 44872 --port 44873`"), "{remote}");
+    }
+}
