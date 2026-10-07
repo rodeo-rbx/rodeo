@@ -1,4 +1,4 @@
-use super::{SharedRpcState, StreamHandler};
+use super::{ChildProcess, SharedRpcState, StreamHandler};
 use rodeo_proto::runtime_types as rt;
 
 /// Locate the Studio `content/` directory via `roblox_install`. Same logic as
@@ -152,35 +152,70 @@ pub async fn process_create(state: SharedRpcState, req: &rt::ProcessCreateReques
         let stdout_handle = format!("proc:{pid}:stdout");
         let stderr_handle = format!("proc:{pid}:stderr");
 
-        guard.stream_handlers.insert(stdin_handle.clone(), StreamHandler::ProcessStdin { stdin: child.stdin.take() });
-        guard.stream_handlers.insert(stdout_handle.clone(), StreamHandler::ProcessStdout { stdout: child.stdout.take() });
-        guard.stream_handlers.insert(stderr_handle.clone(), StreamHandler::ProcessStderr { stderr: child.stderr.take() });
+        let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
+            return Err("create error: piped stdio not available".to_string());
+        };
+        let pipe = |reader: Box<dyn tokio::io::AsyncRead + Send + Unpin>| std::sync::Arc::new(tokio::sync::Mutex::new(reader));
+        guard.stream_handlers.insert(stdin_handle.clone(), StreamHandler::ProcessStdin { stdin: std::sync::Arc::new(tokio::sync::Mutex::new(stdin)) });
+        guard.stream_handlers.insert(stdout_handle.clone(), StreamHandler::ProcessStdout { stdout: pipe(Box::new(stdout)) });
+        guard.stream_handlers.insert(stderr_handle.clone(), StreamHandler::ProcessStderr { stderr: pipe(Box::new(stderr)) });
 
         resp.stdin_handle = Some(stdin_handle);
         resp.stdout_handle = Some(stdout_handle);
         resp.stderr_handle = Some(stderr_handle);
     }
 
-    guard.child_processes.insert(pid, child);
+    guard.child_processes.insert(pid, watch_child(child));
     Ok(resp)
 }
 
+/// Hand `child` to a task that waits for it, and kills it when asked.
+fn watch_child(mut child: tokio::process::Child) -> ChildProcess {
+    let (kill, mut kill_requests) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (exited, exit) = tokio::sync::watch::channel(None);
+    tokio::spawn(async move {
+        let status = tokio::select! {
+            status = child.wait() => status,
+            // Disabled, not fired, once every sender is gone (the run ended):
+            // the child is left running, as before.
+            Some(()) = kill_requests.recv() => {
+                let _ = child.start_kill();
+                child.wait().await
+            }
+        };
+        let _ = exited.send(Some(status.map_err(|e| format!("wait error: {e}"))));
+    });
+    ChildProcess { kill, exit }
+}
+
+/// Wait for a child started by `create` to exit. Any number of callers may
+/// wait, before or after it exits. Its output is not captured here: a piped
+/// child's output is read through its stream handles, and an unpiped child
+/// writes straight to this process's stdout and stderr.
 pub async fn process_run_handle(state: SharedRpcState, req: &rt::ProcessRunHandleRequest) -> Result<rt::ProcessRunResponse, String> {
-    let child = {
-        let mut guard = state.lock().await;
+    let mut exit = {
+        let guard = state.lock().await;
         guard
             .child_processes
-            .remove(&req.pid)
+            .get(&req.pid)
             .ok_or_else(|| format!("unknown pid: {}", req.pid))?
+            .exit
+            .clone()
     };
-    let output = child.wait_with_output().await.map_err(|e| format!("wait error: {e}"))?;
-    Ok(format_process_output(&output))
+    let exited = exit.wait_for(Option::is_some).await.map_err(|_| "wait error: child task ended".to_string())?;
+    let status = exited.as_ref().expect("waited for Some").clone()?;
+    Ok(rt::ProcessRunResponse {
+        ok: status.success(),
+        exitcode: status.code().unwrap_or(-1),
+        ..Default::default()
+    })
 }
 
 pub async fn process_kill(state: SharedRpcState, req: &rt::ProcessKillRequest) -> Result<rt::Ok, String> {
-    let mut guard = state.lock().await;
-    if let Some(child) = guard.child_processes.get_mut(&req.pid) {
-        let _ = child.start_kill();
+    let guard = state.lock().await;
+    if let Some(child) = guard.child_processes.get(&req.pid) {
+        let _ = child.kill.send(());
     }
     Ok(rt::Ok::default())
 }

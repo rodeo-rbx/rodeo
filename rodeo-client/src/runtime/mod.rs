@@ -9,7 +9,6 @@ use rodeo_proto::runtime_types as rt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::process::Child;
 use tokio::sync::Mutex;
 use tracing::Instrument;
 
@@ -82,14 +81,30 @@ pub enum StreamHandler {
     Stderr,
     Stdin,
     ProcessStdin {
-        stdin: Option<tokio::process::ChildStdin>,
+        stdin: ChildInput,
     },
     ProcessStdout {
-        stdout: Option<tokio::process::ChildStdout>,
+        stdout: ChildOutput,
     },
     ProcessStderr {
-        stderr: Option<tokio::process::ChildStderr>,
+        stderr: ChildOutput,
     },
+}
+
+/// A child process's stdout or stderr. Each pipe has its own lock: a read
+/// waiting for output must not hold `RpcState`, or every other call of the
+/// run (writing the child's stdin, printing) would wait with it.
+pub type ChildOutput = Arc<Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>;
+
+/// A child process's stdin, locked on its own for the same reason.
+pub type ChildInput = Arc<Mutex<tokio::process::ChildStdin>>;
+
+/// A child started by `process.create`. A task owns the process and waits for
+/// it: `kill` asks that task to kill it, and `exit` reports how it ended, so
+/// waiting and killing work in any order and from any number of callers.
+pub struct ChildProcess {
+    pub kill: tokio::sync::mpsc::UnboundedSender<()>,
+    pub exit: tokio::sync::watch::Receiver<Option<Result<std::process::ExitStatus, String>>>,
 }
 
 /// Which std stream a captured write came from. `StreamHandler::Stdout` /
@@ -107,7 +122,7 @@ pub type CapturedOutputSender = tokio::sync::mpsc::UnboundedSender<(CapturedStre
 /// Shared RPC state (per-execution, client-side).
 pub struct RpcState {
     pub stream_handlers: HashMap<String, StreamHandler>,
-    pub child_processes: HashMap<String, Child>,
+    pub child_processes: HashMap<String, ChildProcess>,
     pub exit_code: i32,
     /// Set when the script called process.exit — the run ends via a
     /// client-initiated kill and the final result maps to `exit_code`

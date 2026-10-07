@@ -312,7 +312,7 @@ io.read()  -- read line from stdin
 ### `@rodeo/stream` — stream operations
 
 ```lua
-stream.read(handle) -> string?        -- text; one-shot (~16MiB cap on files — use readBytes for big files)
+stream.read(handle, size?) -> string? -- text; one-shot (~16MiB cap on files — use readBytes for big files); process pipes: up to size (4096), nil at EOF
 stream.write(handle, data)            -- any size is safe
 stream.readBytes(handle) -> buffer    -- any size is safe
 stream.writeBytes(handle, data: buffer) -- any size is safe
@@ -527,13 +527,13 @@ the I/O:
 
 ```lua
 require("@lune/fs")       -- readFile/writeFile/isFile/isDir/readDir/remove*/writeDir/copy/move/metadata
-require("@lune/process")  -- args, env, cwd, exit, os, exec (no create)
+require("@lune/process")  -- args, env, cwd, exit, os, exec, create
 require("@lune/serde")    -- encode/decode (json only)
 require("@lune/stdio")    -- write/ewrite
 require("@lune/task")     -- Roblox task, wait/delay clamped to lune's out-of-range handling
 ```
 
-Any other member (`serde.hash`, `process.create`, `stdio.format`, ...) raises
+Any other member (`serde.hash`, `stdio.format`, ...) raises
 `@lune/<module>.<name> is not supported by rodeo's Lune adapter` when accessed.
 
 This also solves the wally/roblox-target package wall, where instance-path

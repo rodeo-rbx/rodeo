@@ -54,8 +54,10 @@ Closes `handle`. Subsequent reads/writes error.
 
 Reads from `handle`. Returns the next chunk as a string, or `nil` on EOF.
 
+For a process's stdout or stderr, a read returns as soon as any output is available, up to `size` bytes (default 4096).
+
 ```luau
-(handle: StreamHandle) -> string?
+(handle: StreamHandle, size: number?) -> string?
 ```
 
 ---

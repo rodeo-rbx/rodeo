@@ -32,31 +32,37 @@ local function route(kind: string, output: string, parent): string
 	return if kind == "default" or kind == "inherit" then output else ""
 end
 
+-- The command line for lune's program, params and shell option: true picks
+-- the platform's shell, and the program and params are joined with spaces
+-- into its -c command.
+local function commandLine(program: string, params: { string }?, shell: any): { string }
+	local args = table.clone(params or {})
+	if shell == true then
+		shell = if isWindows then "powershell" else "/bin/sh"
+	elseif shell ~= nil and type(shell) ~= "string" then
+		error(`Invalid type for option 'shell' - expected 'true' or 'string', got '{typeof(shell)}'`, 3)
+	end
+	return if shell
+		then { shell, "-c", table.concat({ program, table.unpack(args) }, " ") }
+		else { program, table.unpack(args) }
+end
+
+-- lune replaces a leading ~ path component of cwd with the home directory.
+local function expandHome(cwd: any): any
+	if type(cwd) == "string" and (cwd == "~" or string.match(cwd, "^~[/\\]")) then
+		return g.process.homedir() .. string.sub(cwd, 2)
+	end
+	return cwd
+end
+
 -- lune's process.exec over @rodeo/process run: same arguments, options and
 -- { ok, code, stdout, stderr } result. rodeo captures the child's output
 -- either way, so "inherit" and "forward" write it to this run's output when
 -- the child exits rather than as it is produced.
 local function exec(program: string, params: { string }?, options: { [string]: any }?)
 	options = options or {}
-	local args = table.clone(params or {})
-
-	-- lune's shell option: true picks the platform's shell, and the program
-	-- and params are joined with spaces into its -c command.
-	local shell = options.shell
-	if shell == true then
-		shell = if isWindows then "powershell" else "/bin/sh"
-	elseif shell ~= nil and type(shell) ~= "string" then
-		error(`Invalid type for option 'shell' - expected 'true' or 'string', got '{typeof(shell)}'`, 2)
-	end
-	local argv = if shell
-		then { shell, "-c", table.concat({ program, table.unpack(args) }, " ") }
-		else { program, table.unpack(args) }
-
-	-- lune replaces a leading ~ path component with the home directory.
-	local cwd = options.cwd
-	if type(cwd) == "string" and (cwd == "~" or string.match(cwd, "^~[/\\]")) then
-		cwd = g.process.homedir() .. string.sub(cwd, 2)
-	end
+	local argv = commandLine(program, params, options.shell)
+	local cwd = expandHome(options.cwd)
 
 	local stdio = options.stdio
 	local stdout, stderr, input = "default", "default", nil
@@ -84,10 +90,91 @@ local function exec(program: string, params: { string }?, options: { [string]: a
 	})
 end
 
--- Unsupported members that have an @rodeo/process equivalent.
-local REPLACEMENTS = {
-	create = "@rodeo/process create",
-}
+-- lune's process.create over @rodeo/process create, with every stream piped:
+-- a ChildProcess whose stdin writer, stdout and stderr readers, kill and
+-- status follow lune. lune spawns without yielding, but rodeo's spawn is a
+-- call to the host, so it runs on its own thread and each method waits for
+-- it. A spawn that fails (no such program) is reported on stderr and raised
+-- by the first method called, rather than by create.
+local function create(program: string, params: { string }?, options: { [string]: any }?)
+	options = options or {}
+	local argv = commandLine(program, params, options.shell)
+	local spawnOptions = { cwd = expandHome(options.cwd), env = options.env, stdio = "piped" }
+
+	local handle, failure
+	local waiting: { thread } = {}
+	task.spawn(function()
+		local ok, result = pcall(g.process.create, argv, spawnOptions)
+		if ok then
+			handle = result
+		else
+			failure = result
+			g.stream.write(g.io.stderr, `@lune/process.create failed: {result}\n`)
+		end
+		for _, thread in waiting do
+			task.spawn(thread)
+		end
+	end)
+	local function spawned()
+		if handle == nil and failure == nil then
+			table.insert(waiting, coroutine.running())
+			coroutine.yield()
+		end
+		if failure ~= nil then
+			error(failure, 3)
+		end
+		return handle
+	end
+
+	local function reader(stream: string)
+		return {
+			-- Whatever output is available, up to chunkSize bytes (lune's
+			-- default is 1KB); nil once the stream has ended.
+			read = function(_, chunkSize: number?): string?
+				return g.stream.read(spawned()[stream], chunkSize or 1024)
+			end,
+			readToEnd = function(_): string
+				local pipe = spawned()[stream]
+				local chunks = {}
+				while true do
+					local chunk = g.stream.read(pipe, 65536)
+					if chunk == nil then
+						return table.concat(chunks)
+					end
+					table.insert(chunks, chunk)
+				end
+			end,
+		}
+	end
+
+	return {
+		stdin = {
+			write = function(_, data: buffer | string)
+				local pipe = spawned().stdin
+				if type(data) == "buffer" then
+					g.stream.writeBytes(pipe, data)
+				else
+					g.stream.write(pipe, data)
+				end
+			end,
+			close = function(_)
+				g.stream.close(spawned().stdin)
+			end,
+		},
+		stdout = reader("stdout"),
+		stderr = reader("stderr"),
+		kill = function(_)
+			g.process.kill(spawned())
+		end,
+		status = function(_)
+			local result = g.process.run(spawned())
+			-- lune reports 9 for a child with no exit code (killed by a
+			-- signal); rodeo reports -1.
+			local code = if result.exitcode == -1 then 9 else result.exitcode
+			return table.freeze({ ok = code == 0, code = code })
+		end,
+	}
+end
 
 -- Members the shim does not provide raise an error naming them, instead of
 -- indexing to nil and failing later as "attempt to call a nil value".
@@ -99,11 +186,10 @@ return setmetatable({
 	cwd = cwdStr,
 	exit = g.process.exit,
 	exec = exec,
+	create = create,
 	os = platform,
 }, {
 	__index = function(_, key)
-		local replacement = REPLACEMENTS[key]
-		local suffix = if replacement then `; use {replacement}` else ""
-		error(`@lune/process.{key} is not supported by rodeo's Lune adapter{suffix}`, 2)
+		error(`@lune/process.{key} is not supported by rodeo's Lune adapter`, 2)
 	end,
 })

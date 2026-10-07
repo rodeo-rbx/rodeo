@@ -29,9 +29,9 @@ return function(rpc, runtime)
 	-- Public read: dispatches based on handle prefix convention.
 	--   "stdin"                → readLine
 	--   "file:..."             → readAll
-	--   "proc:<pid>:stdout"    → readChunk
-	--   "proc:<pid>:stderr"    → readChunk
-	function stream.read(handle): string?
+	--   "proc:<pid>:stdout"    → readChunk (up to `size` bytes, nil at EOF)
+	--   "proc:<pid>:stderr"    → readChunk (up to `size` bytes, nil at EOF)
+	function stream.read(handle, size: number?): string?
 		local h = handle.__handle
 		if h == "stdin" then
 			local ok, r = pcall(readLine, handle)
@@ -42,8 +42,8 @@ return function(rpc, runtime)
 			if not ok then return nil end
 			return r.data
 		elseif h:match("^proc:.+:std%w+$") then
-			local ok, r = pcall(readChunk, handle)
-			if not ok then return nil end
+			local ok, r = pcall(readChunk, handle, size)
+			if not ok or r.eof then return nil end
 			return r.data
 		else
 			return nil

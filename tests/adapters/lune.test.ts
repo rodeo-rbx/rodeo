@@ -34,6 +34,9 @@ const RUN: string[] = [
   "fs/metadata.luau",
   "fs/move.luau",
   "process/args.luau",
+  "process/create/non_blocking.luau",
+  "process/create/status.luau",
+  "process/create/stream.luau",
   "process/cwd.luau",
   "process/exec/async.luau",
   "process/exec/basic.luau",
@@ -72,7 +75,7 @@ const CWD_FILES: Record<string, string[]> = {
 
 // Prefix (directory or exact file) → reason. In-scope modules, missing surface.
 const GAP: Record<string, string> = {
-  "process/create": "adapter has no process.create (use @rodeo/process create/run)",
+  "process/create/kill.luau": "races cat's startup against the kill; fails under lune 0.10.5 itself (20/20 on macOS). Covered by the process.create block below",
   "process/env.luau": "rodeo env is a read-only remote snapshot; lune env is assignable",
   "serde/compression": "adapter has no serde.compress/decompress",
   "serde/hashing": "adapter has no serde.hash/hmac",
@@ -212,13 +215,78 @@ expectError(function()
 	return modules.serde.hash("sha256", "abc")
 end, "@lune/serde.hash is not supported by rodeo's Lune adapter")
 expectError(function()
-	return modules.process.create
-end, "@lune/process.create is not supported by rodeo's Lune adapter; use @rodeo/process create")
-expectError(function()
 	return modules.serde.encode("toml", {})
 end, '@lune/serde.encode format "toml" is not supported by rodeo\\'s Lune adapter (only "json" is)')
 assert(modules.serde.decode("json", modules.serde.encode("json", { ok = true })).ok)
 `;
+
+// process.create behavior the upstream tests leave out. kill.luau is listed
+// as a gap: it races cat's startup against the kill and fails under lune
+// itself. A JS runtime stands in for cat (none on stock Windows): the one
+// running these tests, so it is present at an absolute path.
+const RT = globalThis.process.execPath.replace(/\\/g, "\\\\");
+const CREATE_SOURCE = `
+local process = require("@lune/process")
+local task = require("@lune/task")
+local CAT = { "-e", "process.stdin.pipe(process.stdout)" }
+
+-- A read waiting for output must not hold up the run's other calls: the
+-- write that produces the output, or a print.
+local child = process.create("${RT}", CAT)
+local got
+task.spawn(function()
+	got = child.stdout:read()
+end)
+task.wait(0.5)
+print("a read is pending")
+child.stdin:write("late")
+for _ = 1, 100 do
+	if got then
+		break
+	end
+	task.wait(0.05)
+end
+assert(got == "late", \`read while a write was pending returned {got}\`)
+
+-- Killed: lune reports code 9, and the child's stdin no longer takes writes.
+child:kill()
+local status = child:status()
+assert(status.ok == false, "a killed child is not ok")
+if process.os ~= "windows" then
+	assert(status.code == 9, \`killed child code {status.code}, expected 9\`)
+end
+assert(child:status().code == status.code, "status can be read again")
+assert(not pcall(function()
+	child.stdin:write("after kill")
+end), "writing to a killed child's stdin should fail")
+
+-- A spawn that fails surfaces from the first method called.
+local missing = process.create("rodeo-no-such-program")
+local ok, err = pcall(function()
+	return missing:status()
+end)
+assert(not ok and string.find(tostring(err), "create error", 1, true), \`expected a create error, got: {err}\`)
+`;
+
+describe("lune adapter process.create", () => {
+  it(
+    "reads while writing, kills, and reports a failed spawn",
+    () => {
+      const cwd = mkdtempSync(join(tmpdir(), "rodeo-lune-create-"));
+      scratchDirs.push(cwd);
+      const proc = Bun.spawnSync(
+        [RODEO, "run", "--source", CREATE_SOURCE, "--port", String(PORT)],
+        { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
+      );
+      const stdout = proc.stdout?.toString() ?? "";
+      const stderr = proc.stderr?.toString() ?? "";
+      expect(proc.exitCode, `--- stdout:\n${stdout}\n--- stderr:\n${stderr}`).toBe(0);
+      expect(stdout).toContain("a read is pending");
+      expect(stderr).toContain("@lune/process.create failed");
+    },
+    120_000,
+  );
+});
 
 describe("lune adapter unsupported members", () => {
   it(

@@ -1,4 +1,4 @@
-use super::{SharedRpcState, StreamHandler};
+use super::{ChildInput, ChildOutput, SharedRpcState, StreamHandler};
 use rodeo_proto::runtime_types as rt;
 use std::io::{BufRead, Read};
 
@@ -50,6 +50,17 @@ pub async fn stream_read_chunk(state: SharedRpcState, req: &rt::StreamReadChunkR
         .map_err(|e| format!("task error: {e}"))?;
     }
 
+    if let Some(output) = child_output(&state, &req.handle).await {
+        use tokio::io::AsyncReadExt;
+        let mut chunk = vec![0u8; size];
+        let n = output.lock().await.read(&mut chunk).await.map_err(|e| format!("read error: {e}"))?;
+        return Ok(rt::StreamReadChunkResponse {
+            data: String::from_utf8_lossy(&chunk[..n]).to_string(),
+            eof: n == 0,
+            ..Default::default()
+        });
+    }
+
     let mut guard = state.lock().await;
     let handler = guard
         .stream_handlers
@@ -57,28 +68,6 @@ pub async fn stream_read_chunk(state: SharedRpcState, req: &rt::StreamReadChunkR
         .ok_or_else(|| format!("no reader for handle: {}", req.handle))?;
 
     match handler {
-        StreamHandler::ProcessStdout { stdout } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stdout.as_mut().ok_or("stdout not available")?;
-            let mut chunk = vec![0u8; size];
-            let n = reader.read(&mut chunk).await.map_err(|e| format!("read error: {e}"))?;
-            Ok(rt::StreamReadChunkResponse {
-                data: String::from_utf8_lossy(&chunk[..n]).to_string(),
-                eof: n == 0,
-                ..Default::default()
-            })
-        }
-        StreamHandler::ProcessStderr { stderr } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stderr.as_mut().ok_or("stderr not available")?;
-            let mut chunk = vec![0u8; size];
-            let n = reader.read(&mut chunk).await.map_err(|e| format!("read error: {e}"))?;
-            Ok(rt::StreamReadChunkResponse {
-                data: String::from_utf8_lossy(&chunk[..n]).to_string(),
-                eof: n == 0,
-                ..Default::default()
-            })
-        }
         StreamHandler::FileReader { reader } => {
             let mut chunk = vec![0u8; size];
             let n = reader.read(&mut chunk).map_err(|e| format!("read error: {e}"))?;
@@ -104,6 +93,10 @@ pub async fn stream_read_line(state: SharedRpcState, req: &rt::StreamReadLineReq
         .map_err(|e| format!("task error: {e}"))?;
     }
 
+    if let Some(output) = child_output(&state, &req.handle).await {
+        return read_line_async(&mut *output.lock().await).await;
+    }
+
     let mut guard = state.lock().await;
     let handler = guard
         .stream_handlers
@@ -111,12 +104,6 @@ pub async fn stream_read_line(state: SharedRpcState, req: &rt::StreamReadLineReq
         .ok_or_else(|| format!("no reader for handle: {}", req.handle))?;
 
     match handler {
-        StreamHandler::ProcessStdout { stdout } => {
-            read_line_async(stdout.as_mut().ok_or("stdout not available")?).await
-        }
-        StreamHandler::ProcessStderr { stderr } => {
-            read_line_async(stderr.as_mut().ok_or("stderr not available")?).await
-        }
         StreamHandler::FileReader { reader } => {
             let mut line = String::new();
             let n = reader.read_line(&mut line).map_err(|e| format!("read error: {e}"))?;
@@ -138,6 +125,13 @@ pub async fn stream_read_all(state: SharedRpcState, req: &rt::StreamReadAllReque
         .map_err(|e| format!("task error: {e}"))?;
     }
 
+    if let Some(output) = child_output(&state, &req.handle).await {
+        use tokio::io::AsyncReadExt;
+        let mut buf = String::new();
+        output.lock().await.read_to_string(&mut buf).await.map_err(|e| format!("read error: {e}"))?;
+        return Ok(rt::StreamReadAllResponse { data: buf, ..Default::default() });
+    }
+
     let mut guard = state.lock().await;
     let handler = guard
         .stream_handlers
@@ -145,20 +139,6 @@ pub async fn stream_read_all(state: SharedRpcState, req: &rt::StreamReadAllReque
         .ok_or_else(|| format!("no reader for handle: {}", req.handle))?;
 
     match handler {
-        StreamHandler::ProcessStdout { stdout } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stdout.as_mut().ok_or("stdout not available")?;
-            let mut buf = String::new();
-            reader.read_to_string(&mut buf).await.map_err(|e| format!("read error: {e}"))?;
-            Ok(rt::StreamReadAllResponse { data: buf, ..Default::default() })
-        }
-        StreamHandler::ProcessStderr { stderr } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stderr.as_mut().ok_or("stderr not available")?;
-            let mut buf = String::new();
-            reader.read_to_string(&mut buf).await.map_err(|e| format!("read error: {e}"))?;
-            Ok(rt::StreamReadAllResponse { data: buf, ..Default::default() })
-        }
         StreamHandler::FileReader { reader } => {
             let mut buf = String::new();
             reader.read_to_string(&mut buf).map_err(|e| format!("read error: {e}"))?;
@@ -169,6 +149,9 @@ pub async fn stream_read_all(state: SharedRpcState, req: &rt::StreamReadAllReque
 }
 
 pub async fn stream_write(state: SharedRpcState, req: &rt::StreamWriteRequest) -> Result<rt::Ok, String> {
+    if let Some(stdin) = child_input(&state, &req.handle).await {
+        return write_child_input(&stdin, req.data.as_bytes()).await;
+    }
     let mut guard = state.lock().await;
     // Capture the sender up-front — `handler` below holds a mutable borrow
     // on stream_handlers that would conflict with a later `guard.` access.
@@ -186,13 +169,6 @@ pub async fn stream_write(state: SharedRpcState, req: &rt::StreamWriteRequest) -
             }
             StreamHandler::FileAppender { buffer, .. } => {
                 buffer.extend_from_slice(req.data.as_bytes());
-            }
-            StreamHandler::ProcessStdin { stdin } => {
-                use tokio::io::AsyncWriteExt;
-                if let Some(writer) = stdin.as_mut() {
-                    let _ = writer.write_all(req.data.as_bytes()).await;
-                    let _ = writer.flush().await;
-                }
             }
             _ => {
                 tracing::debug!("stream.write: no writer for '{}'", req.handle);
@@ -234,6 +210,18 @@ pub async fn stream_read_bytes(state: SharedRpcState, req: &rt::StreamReadBytesR
         .map_err(|e| format!("task error: {e}"))?;
     }
 
+    if let Some(output) = child_output(&state, &req.handle).await {
+        use tokio::io::AsyncReadExt;
+        let mut reader = output.lock().await;
+        let mut buf = Vec::new();
+        match size {
+            Some(s) => (&mut *reader).take(s).read_to_end(&mut buf).await,
+            None => reader.read_to_end(&mut buf).await,
+        }
+        .map_err(|e| format!("read error: {e}"))?;
+        return Ok(response(buf));
+    }
+
     let mut guard = state.lock().await;
     let handler = guard
         .stream_handlers
@@ -241,28 +229,6 @@ pub async fn stream_read_bytes(state: SharedRpcState, req: &rt::StreamReadBytesR
         .ok_or_else(|| format!("no reader for handle: {}", req.handle))?;
 
     match handler {
-        StreamHandler::ProcessStdout { stdout } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stdout.as_mut().ok_or("stdout not available")?;
-            let mut buf = Vec::new();
-            match size {
-                Some(s) => reader.take(s).read_to_end(&mut buf).await,
-                None => reader.read_to_end(&mut buf).await,
-            }
-            .map_err(|e| format!("read error: {e}"))?;
-            Ok(response(buf))
-        }
-        StreamHandler::ProcessStderr { stderr } => {
-            use tokio::io::AsyncReadExt;
-            let reader = stderr.as_mut().ok_or("stderr not available")?;
-            let mut buf = Vec::new();
-            match size {
-                Some(s) => reader.take(s).read_to_end(&mut buf).await,
-                None => reader.read_to_end(&mut buf).await,
-            }
-            .map_err(|e| format!("read error: {e}"))?;
-            Ok(response(buf))
-        }
         StreamHandler::FileReader { reader } => {
             let mut buf = Vec::new();
             match size {
@@ -277,6 +243,9 @@ pub async fn stream_read_bytes(state: SharedRpcState, req: &rt::StreamReadBytesR
 }
 
 pub async fn stream_write_bytes(state: SharedRpcState, req: &rt::StreamWriteBytesRequest) -> Result<rt::Ok, String> {
+    if let Some(stdin) = child_input(&state, &req.handle).await {
+        return write_child_input(&stdin, &req.data).await;
+    }
     let mut guard = state.lock().await;
     let captured_tx = guard.captured_output_tx.clone();
     if let Some(handler) = guard.stream_handlers.get_mut(&req.handle) {
@@ -292,13 +261,6 @@ pub async fn stream_write_bytes(state: SharedRpcState, req: &rt::StreamWriteByte
             }
             StreamHandler::FileAppender { buffer, .. } => {
                 buffer.extend_from_slice(&req.data);
-            }
-            StreamHandler::ProcessStdin { stdin } => {
-                use tokio::io::AsyncWriteExt;
-                if let Some(writer) = stdin.as_mut() {
-                    let _ = writer.write_all(&req.data).await;
-                    let _ = writer.flush().await;
-                }
             }
             _ => {
                 tracing::debug!("stream.writeBytes: no writer for '{}'", req.handle);
@@ -347,6 +309,34 @@ pub async fn take_file_writer(state: &SharedRpcState, handle: &str) -> Result<(S
 }
 
 // --- helpers ---
+
+/// The pipe behind a child process's stdout or stderr handle. Only the lookup
+/// holds the RPC state; the read itself waits on the pipe's own lock.
+async fn child_output(state: &SharedRpcState, handle: &str) -> Option<ChildOutput> {
+    match state.lock().await.stream_handlers.get(handle) {
+        Some(StreamHandler::ProcessStdout { stdout }) => Some(stdout.clone()),
+        Some(StreamHandler::ProcessStderr { stderr }) => Some(stderr.clone()),
+        _ => None,
+    }
+}
+
+/// The pipe behind a child process's stdin handle (see [`child_output`]).
+async fn child_input(state: &SharedRpcState, handle: &str) -> Option<ChildInput> {
+    match state.lock().await.stream_handlers.get(handle) {
+        Some(StreamHandler::ProcessStdin { stdin }) => Some(stdin.clone()),
+        _ => None,
+    }
+}
+
+/// Write to a child's stdin. Fails once the child has exited or been killed
+/// (a closed pipe), rather than dropping the data silently.
+async fn write_child_input(stdin: &ChildInput, data: &[u8]) -> Result<rt::Ok, String> {
+    use tokio::io::AsyncWriteExt;
+    let mut writer = stdin.lock().await;
+    writer.write_all(data).await.map_err(|e| format!("write error: {e}"))?;
+    writer.flush().await.map_err(|e| format!("write error: {e}"))?;
+    Ok(rt::Ok::default())
+}
 
 fn strip_newline(s: &mut String) {
     if s.ends_with('\n') { s.pop(); }

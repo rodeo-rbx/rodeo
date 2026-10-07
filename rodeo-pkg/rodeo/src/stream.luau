@@ -15,8 +15,9 @@ export type StreamHandle = {
 local stream = {}
 
 --- Reads from `handle`. Returns the next chunk as a string, or `nil` on EOF.
-function stream.read(handle: StreamHandle): string?
-	return (singleton :: any).stream.read(handle)
+--- For a process's stdout or stderr, a read returns as soon as any output is available, up to `size` bytes (default 4096).
+function stream.read(handle: StreamHandle, size: number?): string?
+	return (singleton :: any).stream.read(handle, size)
 end
 
 --- Writes `data` to `handle`. `data` is converted to a string via `tostring`.
