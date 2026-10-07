@@ -461,7 +461,8 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
             }
         };
         if let Some(ref sid) = launched_studio_id {
-            finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, &r).await?;
+            // This run started the serve, and it exits with the run.
+            finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, true, &r).await?;
         }
         drop(handle);
         r?
@@ -470,7 +471,7 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
         // Same one-shot hygiene when we launched a studio on someone else's
         // serve: save + close after the run (close skipped for --detach).
         if let Some(ref sid) = launched_studio_id {
-            finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, &r).await?;
+            finish_launched_studio(&cfg.host, cfg.port, sid, save_requested, cfg.detached, false, &r).await?;
         }
         r?
     };
@@ -488,13 +489,15 @@ async fn submit_and_run(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
 ///
 /// Error precedence: when the run itself failed, a save failure is logged but
 /// the run's own error stands; when the run succeeded, a save failure IS the
-/// command's failure. `--detach` saves without closing.
+/// command's failure. `--detach` saves without closing, and says so on stderr
+/// (`serve_exits`: the serve is this run's own and exits with it).
 async fn finish_launched_studio(
     host: &str,
     port: u16,
     session_guid: &str,
     save_requested: bool,
     detached: bool,
+    serve_exits: bool,
     run_result: &anyhow::Result<rodeo_client::RunResult>,
 ) -> Result<()> {
     let run_failed = run_result.as_ref().map(|r| r.exit_code != 0).unwrap_or(true);
@@ -513,10 +516,45 @@ async fn finish_launched_studio(
             }
         }
     }
-    if !detached {
+    if detached {
+        let studio_id = launched_studio_id(host, port, session_guid).await;
+        eprintln!("{}", detached_note(port, studio_id.as_deref(), serve_exits));
+    } else {
         let _ = RodeoClient::connect(host, port)?.close_studio_raw(session_guid, saved).await;
     }
     Ok(())
+}
+
+/// The canonical id `rodeo state` and `rodeo kill` show for the Studio this
+/// run launched (launches are keyed by session; the studio id is the
+/// plugin's). `None` if the serve can't say.
+async fn launched_studio_id(host: &str, port: u16, session_guid: &str) -> Option<String> {
+    let state = RodeoClient::connect(host, port).ok()?.get_state().await.ok()?;
+    state
+        .studios
+        .iter()
+        .find(|st| st.session_id.as_deref() == Some(session_guid))
+        .map(|st| st.studio_id.clone())
+}
+
+/// What `--detach` leaves behind, printed after the run. A detached Studio
+/// outlives the command, so say which serve it answers to and how to stop
+/// it. When the serve was this run's own it exits with the run, and nothing
+/// can close the Studio for the user afterwards (issue #29).
+fn detached_note(port: u16, studio_id: Option<&str>, serve_exits: bool) -> String {
+    if serve_exits {
+        format!(
+            "rodeo: Studio left open (--detach). The serve this run started on port {port} exits with it, \
+             so close that Studio yourself when you're done.\n\
+             rodeo: to stop detached Studios with `rodeo kill`, start `rodeo serve --port {port}` before launching them."
+        )
+    } else {
+        let stop = match studio_id {
+            Some(id) => format!("`rodeo kill {id} --port {port}`"),
+            None => format!("`rodeo kill <studio id> --port {port}` (ids in `rodeo state --port {port}`)"),
+        };
+        format!("rodeo: Studio left open (--detach), owned by the serve on port {port}. Stop it with {stop}.")
+    }
 }
 
 
@@ -714,3 +752,27 @@ async fn wait_for_play_session(client: &RodeoClient, clients: u32) -> Result<()>
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::detached_note;
+
+    #[test]
+    fn detached_note_on_a_serve_that_stays_names_the_kill_command() {
+        let note = detached_note(46001, Some("4f1c2d9e-aaaa-bbbb-cccc-0123456789ab"), false);
+        assert!(note.contains("owned by the serve on port 46001"), "{note}");
+        assert!(note.contains("`rodeo kill 4f1c2d9e-aaaa-bbbb-cccc-0123456789ab --port 46001`"), "{note}");
+
+        let unknown = detached_note(46001, None, false);
+        assert!(unknown.contains("`rodeo state --port 46001`"), "{unknown}");
+    }
+
+    #[test]
+    fn detached_note_on_the_runs_own_serve_says_it_exits() {
+        let note = detached_note(44872, None, true);
+        assert!(note.contains("exits with it"), "{note}");
+        assert!(note.contains("close that Studio yourself"), "{note}");
+        assert!(note.contains("`rodeo serve --port 44872`"), "{note}");
+        // The serve is gone, so there is no kill command to offer for it.
+        assert!(!note.contains("rodeo kill <"), "{note}");
+    }
+}

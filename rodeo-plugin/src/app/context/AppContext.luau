@@ -15,6 +15,7 @@ local RunService = game:GetService("RunService")
 local MessageHandler = require(script.Parent.MessageHandler)
 local rodeoProto = require(script.Parent.Parent.Parent.Parent.proto.rodeo)
 local constants = require(script.Parent.Parent.Parent.library.constants)
+local reconnect = require(script.Parent.Parent.Parent.library.reconnect)
 local studio = require(script.Parent.Parent.Parent.library.studio)
 
 local e = React.createElement
@@ -112,9 +113,18 @@ local function AppProvider(props: AppProviderProps)
 		serverVersionRef.current = version
 		setServerVersion(version)
 	end
-	-- Seconds to wait before the next dial, set by the close/error handlers
-	-- and consumed by the auto-connect effect. nil = first attempt.
+	-- Seconds to wait before the next dial, set when an attempt fails or a
+	-- connection drops, and read by the auto-connect effect. nil = first
+	-- attempt.
 	local retryDelayRef = React.useRef(nil :: number?)
+	-- Consecutive failed attempts, for the back-off (reconnect.retryDelay).
+	-- Reset when a socket opens.
+	local failuresRef = React.useRef(0)
+	-- Whether this DOM's /health probe can be believed (see reconnect.luau).
+	-- A play client cannot make HTTP requests, so it never probes.
+	local probeTrustRef = React.useRef(
+		(if RunService:IsEdit() or RunService:IsServer() then "unknown" else "unusable") :: reconnect.ProbeTrust
+	)
 	local announcedRef = React.useRef(false)
 
 	-- Execution state
@@ -144,7 +154,10 @@ local function AppProvider(props: AppProviderProps)
 	-- Store client in state so message handler effect can access it
 	local client, setClient = React.useState(nil :: any)
 
-	-- WebSocket client creation effect
+	-- One connection attempt per wsUrl: probe the backend (edit and play-server
+	-- DOMs, see reconnect.luau), open the WebSocket, and hold it until it
+	-- closes. Clearing wsUrl ends the attempt; the auto-connect effect below
+	-- starts the next one after the back-off.
 	React.useEffect(function()
 		if not wsUrl then
 			setConnected(false)
@@ -153,103 +166,162 @@ local function AppProvider(props: AppProviderProps)
 			return
 		end
 
-		local success, newClient = xpcall(function()
-			return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, {
-				Url = wsUrl,
-			})
-		end, function(err)
-			warn("[rodeo] Error creating client:", err)
-			setConnected(false)
-		end)
-
-		if not success then
-			setWsUrl(nil)
-			return
-		end
-
+		-- Everything this attempt started can still report after the attempt
+		-- is over: a Closed after the Error that already ended it, a probe
+		-- answering after its timeout, any socket event after the cleanup
+		-- below. `live` turns false at that point and they all do nothing, so a
+		-- stale callback never tears down or re-times the attempt after it.
+		local live = true
+		local opened = false
+		local probeResult: reconnect.ProbeResult? = nil
+		local newClient: any = nil
 		local disconnectStudioStateListener
 
-		newClient.Opened:Connect(function()
-			setConnected(true)
-			if not announcedRef.current then
-				announcedRef.current = true
-				if props.onConnected then
-					task.spawn(props.onConnected)
-				end
+		-- Ends the attempt and schedules the next. Error, Closed and the open
+		-- deadline may all fire for one socket; only the first counts.
+		local function fail()
+			if not live then
+				return
 			end
-
-			-- Send state on connect and on every change
-			local function sendState()
-				local state = studio.getState()
-				if not state then return end
-				local msg = rodeoProto.PluginMessage.new({
-					msg = { type = "studioState", value = rodeoProto.StudioStateMsg.new({
-						domId = state.domId,
-						studioId = state.studioId,
-						mcpStudioId = state.mcpStudioId,
-						isServer = state.isServer,
-						isClient = state.isClient,
-						isRunning = state.isRunning,
-						isEdit = state.isEdit,
-						mode = state.mode,
-						domKind = state.domKind,
-						pluginVersion = constants.BUILD_ID,
-						gameName = state.gameName,
-						placeId = state.placeId,
-						gameId = state.gameId,
-						clientInfo = state.clientInfo and rodeoProto.ClientInfo.new({
-							name = state.clientInfo.name,
-							userId = state.clientInfo.userId,
-						}) or nil,
-						-- Rodeo session identity, written by the launch's RunScript
-						-- bootstrap as the `rodeoSession` Workspace attribute. Read at
-						-- send time (always after connect, so the bootstrap has run);
-						-- nil for a manual Studio. Master matches it to its
-						-- StudioInstanceInfo and stamps DomConnection.session_guid on the
-						-- first message.
-						sessionGuid = game:GetService("Workspace"):GetAttribute("rodeoSession"),
-					}) },
-				})
-				newClient:Send(HttpService:JSONEncode(msg:jsonEncode()))
-			end
-			sendState()
-			disconnectStudioStateListener = studio.listen(sendState)
-		end)
-
-		-- Back-off before the next dial. A backend of another build closes the
-		-- socket (pre-1.5) or parks it (1.5+); redialing every second at a
-		-- backend that will never take this plugin is pure churn, so wait 30 s.
-		-- Otherwise: 1 s in the edit DOM (as before); 5 s in server/client DOMs,
-		-- which used to redial with no delay at all.
-		local function scheduleRetry()
+			live = false
+			failuresRef.current += 1
+			-- A backend of another build closes (pre-1.5) or parks (1.5+) the
+			-- socket after its welcome; that wait is longer (see reconnect.luau).
 			local seen = serverVersionRef.current
-			local mismatch = seen ~= nil and seen ~= constants.BUILD_ID
-			retryDelayRef.current = if mismatch then 30 elseif RunService:IsEdit() then 1 else 5
-		end
-
-		newClient.Error:Connect(function(code: string, message: string)
-			-- warn("[rodeo] Socket error:", code, message)
-			scheduleRetry()
-			setWsUrl(nil)
-		end)
-
-		newClient.Closed:Connect(function()
-			scheduleRetry()
+			retryDelayRef.current =
+				reconnect.retryDelay(failuresRef.current, seen ~= nil and seen ~= constants.BUILD_ID)
 			setConnected(false)
 			setWsUrl(nil)
 			setClient(nil)
 			setActiveProcesses({})
 			-- Keep serverVersion: a mismatch closes or parks the socket and the
 			-- status should stay readable while the plugin waits to retry.
-		end)
+		end
 
-		setClient(newClient)
+		local function openSocket()
+			local success, created = pcall(function()
+				return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, {
+					Url = wsUrl,
+				})
+			end)
+			if not success then
+				-- Once per outage, not once per retry.
+				if failuresRef.current == 0 then
+					warn("[rodeo] Error creating client:", created)
+				end
+				fail()
+				return
+			end
+			newClient = created
+
+			newClient.Opened:Connect(function()
+				if not live then
+					return
+				end
+				opened = true
+				failuresRef.current = 0
+				probeTrustRef.current = reconnect.afterOpen(probeTrustRef.current, probeResult)
+				setConnected(true)
+				if not announcedRef.current then
+					announcedRef.current = true
+					if props.onConnected then
+						task.spawn(props.onConnected)
+					end
+				end
+
+				-- Send state on connect and on every change
+				local function sendState()
+					local state = studio.getState()
+					if not state then return end
+					local msg = rodeoProto.PluginMessage.new({
+						msg = { type = "studioState", value = rodeoProto.StudioStateMsg.new({
+							domId = state.domId,
+							studioId = state.studioId,
+							mcpStudioId = state.mcpStudioId,
+							isServer = state.isServer,
+							isClient = state.isClient,
+							isRunning = state.isRunning,
+							isEdit = state.isEdit,
+							mode = state.mode,
+							domKind = state.domKind,
+							pluginVersion = constants.BUILD_ID,
+							gameName = state.gameName,
+							placeId = state.placeId,
+							gameId = state.gameId,
+							clientInfo = state.clientInfo and rodeoProto.ClientInfo.new({
+								name = state.clientInfo.name,
+								userId = state.clientInfo.userId,
+							}) or nil,
+							-- Rodeo session identity, written by the launch's RunScript
+							-- bootstrap as the `rodeoSession` Workspace attribute. Read at
+							-- send time (always after connect, so the bootstrap has run);
+							-- nil for a manual Studio. Master matches it to its
+							-- StudioInstanceInfo and stamps DomConnection.session_guid on the
+							-- first message.
+							sessionGuid = game:GetService("Workspace"):GetAttribute("rodeoSession"),
+						}) },
+					})
+					newClient:Send(HttpService:JSONEncode(msg:jsonEncode()))
+				end
+				sendState()
+				disconnectStudioStateListener = studio.listen(sendState)
+			end)
+
+			newClient.Error:Connect(function(_code: string, _message: string)
+				fail()
+			end)
+
+			newClient.Closed:Connect(function()
+				fail()
+			end)
+
+			task.delay(reconnect.OPEN_TIMEOUT, function()
+				if not opened then
+					fail()
+				end
+			end)
+
+			setClient(newClient)
+		end
+
+		if probeTrustRef.current == "unusable" then
+			openSocket()
+		else
+			-- Both the request and its timeout settle the probe; whichever is
+			-- first decides, and only while the attempt is still live.
+			local function settle(result: reconnect.ProbeResult)
+				if probeResult ~= nil or not live then
+					return
+				end
+				probeResult = result
+				local trust, dial = reconnect.afterProbe(probeTrustRef.current, result)
+				probeTrustRef.current = trust
+				if dial then
+					openSocket()
+				else
+					fail()
+				end
+			end
+			task.spawn(function()
+				local ok = pcall(function()
+					return HttpService:RequestAsync({
+						Url = `http://{host}:{myPort}/health`,
+						Method = "GET",
+					})
+				end)
+				settle(if ok then "answered" else "refused")
+			end)
+			task.delay(reconnect.PROBE_TIMEOUT, settle, "timeout")
+		end
 
 		return function()
+			live = false
 			if disconnectStudioStateListener then
 				disconnectStudioStateListener()
 			end
-			newClient:Close()
+			if newClient then
+				newClient:Close()
+			end
 		end
 	end, { wsUrl })
 
@@ -285,7 +357,8 @@ local function AppProvider(props: AppProviderProps)
 	--    Before the bootstrap lands every installed plugin sees no attribute,
 	--    so the check runs at dial time and again whenever the attribute
 	--    changes.
-	--  * Back-off, set by the close/error handlers (retryDelayRef).
+	--  * Back-off, set when the last attempt failed or the connection dropped
+	--    (retryDelayRef; see reconnect.luau).
 	React.useEffect(function()
 		-- Skip if already connected or a connection is in progress.
 		if connected or wsUrl then
@@ -311,9 +384,10 @@ local function AppProvider(props: AppProviderProps)
 		-- plugin mounts, so its first attempt waits 1 s. Server/client DOMs are
 		-- clones of the edit DataModel and inherit both, so they dial at once —
 		-- one plugin connects per DOM, and this is on each DOM's launch→connect
-		-- critical path. Retries use the back-off the last close chose.
+		-- critical path. Retries use the back-off the last failure chose. It is
+		-- read, not consumed: should this effect run again before the dial, it
+		-- must not fall back to the first attempt's immediate dial.
 		local delay = retryDelayRef.current or (if RunService:IsEdit() then 1 else 0)
-		retryDelayRef.current = nil
 		if delay > 0 then
 			task.delay(delay, doConnect)
 		else
