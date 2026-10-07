@@ -16,6 +16,7 @@ export type StdioKind = "default" | "piped" | "inherit" | "none" | "tee"
 --- `stdio` applies to all three streams; per-stream overrides win.
 --- `env` adds variables to the inherited environment.
 --- `input` (`run` and `system` only) is written to the child's stdin, which is then closed; without it, a child that reads stdin gets end-of-file.
+--- `shell` (`system` only) is the shell that runs the command; the default is `sh`, or `cmd` on Windows.
 export type ProcessRunOptions = {
 	cwd: string?,
 	stdio: StdioKind?,
@@ -24,6 +25,7 @@ export type ProcessRunOptions = {
 	stderr: StdioKind?,
 	env: { [string]: string }?,
 	input: (string | buffer)?,
+	shell: string?,
 }
 
 --- Result returned by `run` and `system`.
@@ -33,6 +35,7 @@ export type ProcessResult = {
 	exitcode: number, -- -1 when the process was terminated by a signal
 	out: string,
 	err: string,
+	signal: number?, -- the signal that terminated the process (Unix)
 }
 
 --- Handle to a process started with `create`. Fields are populated when

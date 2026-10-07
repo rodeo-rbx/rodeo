@@ -10,6 +10,7 @@ local function applyRunDefaults(resp: runtime.ProcessRunResponse): runtime.Proce
 		exitcode = resp.exitcode or 0,
 		out = resp.out or "",
 		err = resp.err or "",
+		signal = resp.signal,
 	}
 end
 

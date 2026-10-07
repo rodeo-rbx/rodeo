@@ -17,6 +17,7 @@ const SUITE_DIR = join(import.meta.dir, "lute");
 // Expected stdout fragments per script (io.write must actually reach stdout).
 const EXPECT_STDOUT: Record<string, string> = {
   "io.luau": "lute-io-multi-arg",
+  "process.luau": "lute-inherit", // stdio = "inherit" prints
 };
 
 const studio = cliStudioHandle(PORT);
@@ -55,6 +56,9 @@ describe("lute conformance", () => {
         expect(proc.exitCode, `${file}\n--- stdout:\n${stdout}\n--- stderr:\n${stderr}`).toBe(0);
         if (EXPECT_STDOUT[file]) {
           expect(stdout).toContain(EXPECT_STDOUT[file]);
+        }
+        if (file === "process.luau") {
+          expect(stdout).not.toContain("lute-none"); // stdio = "none" discards
         }
       },
       120_000,

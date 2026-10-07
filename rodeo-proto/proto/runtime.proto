@@ -285,6 +285,7 @@ message ProcessOptions {
   optional string stdio = 2;  // "piped" | absent (inherited)
   map<string, string> env = 3;  // added to the inherited environment
   optional bytes input = 4;  // run/system: written to the child's stdin, which is then closed
+  optional string shell = 5;  // system: the shell that runs the command (default sh, or cmd on Windows)
 }
 
 message ProcessGetInfoRequest {}
@@ -310,9 +311,10 @@ message ProcessRunRequest {
 
 message ProcessRunResponse {
   bool ok = 1;
-  int32 exitcode = 2;
+  int32 exitcode = 2;  // -1 when a signal ended the process
   string out = 3;
   string err = 4;
+  optional int32 signal = 5;  // the signal that ended the process (Unix)
 }
 
 message ProcessSystemRequest {

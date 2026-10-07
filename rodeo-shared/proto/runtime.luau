@@ -1173,6 +1173,7 @@ type _ProcessOptionsFields = {
 	stdio: string?,
 	env: { [string]: string? },
 	input: buffer?,
+	shell: string?,
 }
 
 export type _ProcessOptionsPartialFields = {
@@ -1180,6 +1181,7 @@ export type _ProcessOptionsPartialFields = {
 	stdio: string?,
 	env: { [string]: string }?,
 	input: buffer?,
+	shell: string?,
 }
 
 export type ProcessOptions = typeof(setmetatable({} :: _ProcessOptionsFields, {} :: _ProcessOptionsImpl))
@@ -1355,6 +1357,7 @@ type _ProcessRunResponseFields = {
 	exitcode: number,
 	out: string,
 	err: string,
+	signal: number?,
 }
 
 export type _ProcessRunResponsePartialFields = {
@@ -1362,6 +1365,7 @@ export type _ProcessRunResponsePartialFields = {
 	exitcode: number?,
 	out: string?,
 	err: string?,
+	signal: number?,
 }
 
 export type ProcessRunResponse = typeof(setmetatable({} :: _ProcessRunResponseFields, {} :: _ProcessRunResponseImpl))
@@ -6742,6 +6746,7 @@ do
 			stdio = if data == nil or data.stdio == nil then nil else data.stdio,
 			env = if data == nil or data.env == nil then {} else data.env,
 			input = if data == nil or data.input == nil then nil else data.input,
+			shell = if data == nil or data.shell == nil then nil else data.shell,
 		}, _ProcessOptionsImpl :: _ProcessOptionsImpl)
 	end
 
@@ -6776,6 +6781,11 @@ do
 		if self.input ~= nil then
 			output, cursor = proto.writeTag(output, cursor, 4, proto.wireTypes.lengthDelimited)
 			output, cursor = proto.writeBuffer(output, cursor, self.input, buffer.len(self.input))
+		end
+
+		if self.shell ~= nil then
+			output, cursor = proto.writeTag(output, cursor, 5, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.shell)
 		end
 
 		local shrunkBuffer = buffer.create(cursor)
@@ -6823,6 +6833,11 @@ do
 					local value
 					value, cursor = proto.readBuffer(input, cursor)
 					self.input = value
+					continue
+				elseif field == 5 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.shell = proto.decodeString(value)
 					continue
 				end
 
@@ -6872,6 +6887,10 @@ do
 			output.input = proto.json.serializeBuffer(self.input)
 		end
 
+		if self.shell ~= nil then
+			output.shell = self.shell
+		end
+
 		return output
 	end
 
@@ -6897,6 +6916,10 @@ do
 
 		if input.input ~= nil then
 			self.input = proto.json.deserializeBuffer(input.input)
+		end
+
+		if input.shell ~= nil then
+			self.shell = input.shell
 		end
 
 		return self
@@ -7700,6 +7723,7 @@ do
 			exitcode = if data == nil or data.exitcode == nil then 0 else data.exitcode,
 			out = if data == nil or data.out == nil then "" else data.out,
 			err = if data == nil or data.err == nil then "" else data.err,
+			signal = if data == nil or data.signal == nil then nil else data.signal,
 		}, _ProcessRunResponseImpl :: _ProcessRunResponseImpl)
 	end
 
@@ -7727,6 +7751,11 @@ do
 			output, cursor = proto.writeString(output, cursor, self.err)
 		end
 
+		if self.signal ~= nil then
+			output, cursor = proto.writeTag(output, cursor, 5, proto.wireTypes.varint)
+			output, cursor = proto.writeVarInt(output, cursor, self.signal)
+		end
+
 		local shrunkBuffer = buffer.create(cursor)
 		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
 		return shrunkBuffer
@@ -7750,6 +7779,11 @@ do
 					local value
 					value, cursor = proto.readVarIntI32(input, cursor)
 					self.exitcode = value
+					continue
+				elseif field == 5 then
+					local value
+					value, cursor = proto.readVarIntI32(input, cursor)
+					self.signal = value
 					continue
 				end
 
@@ -7809,6 +7843,10 @@ do
 			output.err = self.err
 		end
 
+		if self.signal ~= nil then
+			output.signal = self.signal
+		end
+
 		return output
 	end
 
@@ -7829,6 +7867,10 @@ do
 
 		if input.err ~= nil then
 			self.err = input.err
+		end
+
+		if input.signal ~= nil then
+			self.signal = input.signal
 		end
 
 		return self

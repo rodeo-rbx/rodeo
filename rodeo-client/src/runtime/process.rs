@@ -12,10 +12,22 @@ fn studio_content_path() -> Option<String> {
 
 fn format_process_output(output: &std::process::Output) -> rt::ProcessRunResponse {
     rt::ProcessRunResponse {
-        ok: output.status.success(),
-        exitcode: output.status.code().unwrap_or(-1),
         out: String::from_utf8_lossy(&output.stdout).to_string(),
         err: String::from_utf8_lossy(&output.stderr).to_string(),
+        ..format_status(output.status)
+    }
+}
+
+/// How a process ended: its exit code, or -1 and the signal that ended it.
+fn format_status(status: std::process::ExitStatus) -> rt::ProcessRunResponse {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let signal = None;
+    rt::ProcessRunResponse {
+        ok: status.success(),
+        exitcode: status.code().unwrap_or(-1),
+        signal,
         ..Default::default()
     }
 }
@@ -104,9 +116,10 @@ pub async fn process_run(req: &rt::ProcessRunRequest) -> Result<rt::ProcessRunRe
 
 pub async fn process_system(req: &rt::ProcessSystemRequest) -> Result<rt::ProcessRunResponse, String> {
     // Shell out via the platform's shell: `sh -c` on Unix, `cmd /C` on Windows
-    // (there is no `sh` on a stock Windows install).
-    let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    // (there is no `sh` on a stock Windows install), unless `shell` names one.
+    let (default_shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
     let options = req.options.as_option();
+    let shell = options.and_then(|o| o.shell.as_deref()).unwrap_or(default_shell);
     let cmd = build_command(shell, &[flag.to_string(), req.command.clone()], options);
     let output = output_with_input(cmd, options.and_then(|o| o.input.as_deref()))
         .await
@@ -205,11 +218,7 @@ pub async fn process_run_handle(state: SharedRpcState, req: &rt::ProcessRunHandl
     };
     let exited = exit.wait_for(Option::is_some).await.map_err(|_| "wait error: child task ended".to_string())?;
     let status = exited.as_ref().expect("waited for Some").clone()?;
-    Ok(rt::ProcessRunResponse {
-        ok: status.success(),
-        exitcode: status.code().unwrap_or(-1),
-        ..Default::default()
-    })
+    Ok(format_status(status))
 }
 
 pub async fn process_kill(state: SharedRpcState, req: &rt::ProcessKillRequest) -> Result<rt::Ok, String> {

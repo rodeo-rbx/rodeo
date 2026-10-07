@@ -290,10 +290,10 @@ process.execpath()  -- path to rodeo executable
 process.platform()  -- "macos" | "windows" | ...
 process.exit(code)
 
--- Blocking execution; ProcessResult is { ok, exitcode, out, err }
+-- Blocking execution; ProcessResult is { ok, exitcode, out, err, signal? } (signal: Unix, exitcode -1)
 process.run(args, options?) -> ProcessResult
 process.system(command, options?) -> ProcessResult
--- options: cwd, env (added to the inherited environment), input (string|buffer written to stdin)
+-- options: cwd, env (added to the inherited environment), input (string|buffer written to stdin), shell (system only)
 
 -- Async execution with stdio piping
 process.create(args, options?) -> ProcessHandle

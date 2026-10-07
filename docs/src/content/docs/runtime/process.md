@@ -62,6 +62,7 @@ type ProcessResult = {
 	exitcode: number, -- -1 when the process was terminated by a signal
 	out: string,
 	err: string,
+	signal: number?, -- the signal that terminated the process (Unix)
 }
 ```
 
@@ -77,6 +78,8 @@ Options accepted by `run`, `system`, and `create`. All fields optional.
 
 `input` (`run` and `system` only) is written to the child's stdin, which is then closed; without it, a child that reads stdin gets end-of-file.
 
+`shell` (`system` only) is the shell that runs the command; the default is `sh`, or `cmd` on Windows.
+
 ```luau
 type ProcessRunOptions = {
 	cwd: string?,
@@ -86,6 +89,7 @@ type ProcessRunOptions = {
 	stderr: StdioKind?,
 	env: { [string]: string }?,
 	input: (string | buffer)?,
+	shell: string?,
 }
 ```
 

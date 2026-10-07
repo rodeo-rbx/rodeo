@@ -298,7 +298,7 @@ export function io(run: RunFn): void {
   });
 }
 
-// ── process (12 tests) ────────────────────────────────────────────────────
+// ── process (14 tests) ────────────────────────────────────────────────────
 
 export function process(run: RunFn): void {
   it("process: cwd, homedir, execpath are functions", async () => {
@@ -407,6 +407,33 @@ export function process(run: RunFn): void {
     });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("piped in|buffered");
+  });
+
+  it("process: run reports the signal that ended the child", async () => {
+    const result = await run({
+      showReturn: true,
+      source: `local p = require("@rodeo/process")
+        local r = p.run({ "${RT}", "-e", "process.kill(process.pid, 'SIGKILL')" })
+        return { ok = r.ok, exitcode = r.exitcode, signal = r.signal }`,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain('"ok":false');
+    // Windows has no signals: the child just exits.
+    if (globalThis.process.platform !== "win32") {
+      expect(result.output).toContain('"exitcode":-1');
+      expect(result.output).toContain('"signal":9');
+    }
+  });
+
+  it("process: system runs the command in the given shell", async () => {
+    if (globalThis.process.platform === "win32") return; // no /bin/bash
+    const result = await run({
+      showReturn: true,
+      source: `local p = require("@rodeo/process")
+        return p.system("echo $0", { shell = "/bin/bash" }).out`,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("/bin/bash");
   });
 
   it("process: create + stream read", async () => {
