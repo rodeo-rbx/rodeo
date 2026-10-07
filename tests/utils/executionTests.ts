@@ -767,7 +767,7 @@ export function execFiltering(run: RunFn): void {
   });
 }
 
-// ── uncachedRequireTraversal (6 tests) ───────────────────────────────────
+// ── uncachedRequireTraversal (13 tests) ──────────────────────────────────
 
 export function uncachedRequireTraversal(run: RunFn): void {
   // Fresh module state is opt-in: --reload-requires runs the cloning
@@ -833,9 +833,103 @@ export function uncachedRequireTraversal(run: RunFn): void {
     expect(result.ok).toBe(true);
     expect(result.return).toBe("original");
   });
+
+  // Issue #33: an argument that reads a local, or is computed, can't be
+  // evaluated ahead of time, so these requires used to reach the live module
+  // ("mutated"). The require wrapper each loaded module starts with swaps a
+  // fresh copy in when the require runs.
+  const RS = 'local RS = game:GetService("ReplicatedStorage")\n';
+
+  it("require through a local variable gets fresh state", async () => {
+    const result = await exec(`${RS}return require(RS.leaf).value`);
+    expect(result.ok).toBe(true);
+    expect(result.return).toBe("original");
+  });
+
+  it("string require in a module required through a local gets fresh state", async () => {
+    const result = await exec(`${RS}return require(RS.mid).leaf.value`);
+    expect(result.ok).toBe(true);
+    expect(result.return).toBe("original");
+  });
+
+  it("child of a module tree required through a local gets fresh state", async () => {
+    const result = await exec(
+      'local deep = game:GetService("ReplicatedStorage").deep\nreturn require(deep.child).leaf.value',
+    );
+    expect(result.ok).toBe(true);
+    expect(result.return).toBe("original");
+  });
+
+  it("computed require gets fresh state", async () => {
+    const result = await exec(
+      `${RS}for _, m in RS:GetChildren() do if m.Name == "leaf" then return require(m).value end end`,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.return).toBe("original");
+  });
+
+  it("requires written either way share one fresh copy", async () => {
+    // mid is copied ahead of time (literal path), leaf and deep at require
+    // time; all three must end up with the same fresh leaf.
+    const result = await exec(
+      `${RS}local leaf = require(RS.leaf)\n` +
+        "return { value = leaf.value, viaMid = require(game.ReplicatedStorage.mid).leaf == leaf, " +
+        "viaDeep = require(RS.deep).child.leaf == leaf }",
+    );
+    expect(result.ok).toBe(true);
+    expect(result.return).toEqual({ value: "original", viaMid: true, viaDeep: true });
+  });
+
+  it("module edited after it was cached reloads however its require is written", async () => {
+    // The issue's repro. Writing Source needs plugin identity; the requires
+    // run as server Scripts so they use the game's require cache.
+    const plugin = (source: string) => run({ mode: "run", context: "plugin", source });
+    const server = (source: string, reloadRequires: boolean) =>
+      run({ mode: "run", context: "server", source, reloadRequires });
+
+    const setup = await plugin(`
+      local folder = Instance.new("Folder"); folder.Name = "ReloadRepro"; folder.Parent = game:GetService("ReplicatedStorage")
+      local inner = Instance.new("ModuleScript"); inner.Name = "Inner"; inner.Source = "return 1"; inner.Parent = folder
+      local outer = Instance.new("ModuleScript"); outer.Name = "Outer"; outer.Source = "return require(script.Parent.Inner)"; outer.Parent = folder`);
+    expect(setup.ok, setup.output).toBe(true);
+    try {
+      const cached = await server(
+        'local f = game:GetService("ReplicatedStorage").ReloadRepro\nreturn { inner = require(f.Inner), outer = require(f.Outer) }',
+        false,
+      );
+      expect(cached.return).toEqual({ inner: 1, outer: 1 });
+      const edit = await plugin('game:GetService("ReplicatedStorage").ReloadRepro.Inner.Source = "return 2"');
+      expect(edit.ok, edit.output).toBe(true);
+
+      const rows: [string, unknown][] = [
+        ['return require(game:GetService("ReplicatedStorage").ReloadRepro.Inner)', 2],
+        ["return require(game.ReplicatedStorage.ReloadRepro.Outer)", 2],
+        ['local RS = game:GetService("ReplicatedStorage"); return require(RS.ReloadRepro.Inner)', 2],
+        ['local RS = game:GetService("ReplicatedStorage"); return require(RS.ReloadRepro.Outer)', 2],
+        [
+          'local f = game:GetService("ReplicatedStorage").ReloadRepro; return { inner = require(f.Inner), outer = require(f.Outer) }',
+          { inner: 2, outer: 2 },
+        ],
+      ];
+      for (const [source, want] of rows) {
+        const result = await server(source, true);
+        expect(result.ok, `${source}\n${result.output}`).toBe(true);
+        expect(result.return, source).toEqual(want);
+      }
+
+      // Without the flag the same require still reaches the game's module.
+      const live = await server(
+        'local RS = game:GetService("ReplicatedStorage"); return require(RS.ReloadRepro.Outer)',
+        false,
+      );
+      expect(live.return).toBe(1);
+    } finally {
+      await plugin('game:GetService("ReplicatedStorage").ReloadRepro:Destroy()');
+    }
+  });
 }
 
-// ── cachedRequireTraversal (4 tests) ─────────────────────────────────────
+// ── cachedRequireTraversal (5 tests) ─────────────────────────────────────
 
 export function cachedRequireTraversal(run: RunFn): void {
   // Cached requires are the default now — no flag: the require resolves to
@@ -868,6 +962,12 @@ export function cachedRequireTraversal(run: RunFn): void {
 
   it("ancestor transitive dep sees mutated state", async () => {
     const result = await exec("return require(game.ReplicatedStorage.deep).child.leaf.value");
+    expect(result.ok).toBe(true);
+    expect(result.return).toBe("mutated");
+  });
+
+  it("require through a local variable sees mutated state", async () => {
+    const result = await exec('local RS = game:GetService("ReplicatedStorage")\nreturn require(RS.mid).leaf.value');
     expect(result.ok).toBe(true);
     expect(result.return).toBe("mutated");
   });

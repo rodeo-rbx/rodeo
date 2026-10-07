@@ -70,14 +70,27 @@ local function executeInContext(ctx: utils.ExecutionContext, context: RunContext
 
 	-- Instance requires use the VM's require cache by default — Roblox's own
 	-- semantics, so a require resolves to the live module the surrounding game
-	-- is already using. `reloadRequires` opts into re-evaluation: the traversal
-	-- clones the require tree so this run gets its own freshly-initialized
-	-- copies (test isolation, or picking up edits made since the modules were
-	-- first required).
+	-- is already using. `reloadRequires` opts into re-evaluation: this run gets
+	-- its own freshly-initialized copies (test isolation, or picking up edits
+	-- made since the modules were first required). The traversal swaps copies
+	-- in for the requires it can evaluate ahead of time; the require wrapper
+	-- each copy starts with swaps in the rest as they're called.
 	local traversalCleanup: (() -> ())? = nil
 	if params.reloadRequires then
 		log.debug(`Setting up uncachable require traversal...`)
-		traversalCleanup = requireResolver.setupUncachableRequireModuleTraversal(ctx.module, params.executionId, log)
+		local session = requireResolver.createReloadSession(params.executionId, log)
+		session.adopt(ctx.module)
+		session.traverse(ctx.module)
+		-- The require wrapper in the run's modules reaches the session through
+		-- this (see the runner): it runs in the run's VM, often at game-script
+		-- identity, while copying a module means writing its Source. A
+		-- BindableFunction's OnInvoke runs at the identity that set it — here,
+		-- the plugin's — and Invoke passes Instances by reference.
+		local reloadFn = Instance.new("BindableFunction")
+		reloadFn.Name = "reload"
+		reloadFn.OnInvoke = session.resolve
+		reloadFn.Parent = ctx.runner
+		traversalCleanup = session.cleanup
 		log.debug(`Traversal setup complete`)
 	end
 

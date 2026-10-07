@@ -225,6 +225,7 @@ local function createExecutionContext(source: string, context: RunContext, execu
 end
 
 return {
+	updateSource = updateSource,
 	resolveInstancePath = resolveInstancePath,
 	createExecutionContext = createExecutionContext,
 	makeIgnoreSuffix = makeIgnoreSuffix,
