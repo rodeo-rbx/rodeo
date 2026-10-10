@@ -272,7 +272,9 @@ local function encodeJson(value: any): string
 			0
 		)
 	end
-	error(json, 0)
+	-- Anything else (a boolean key, nesting past Luau's stack): the engine's
+	-- message alone doesn't say it was the return value.
+	error(`couldn't encode the return value as JSON: {json}`, 0)
 end
 
 -- Handle return value output. `returnValueJson` is the canonical wire-format

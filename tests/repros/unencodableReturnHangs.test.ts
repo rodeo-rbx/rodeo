@@ -4,10 +4,12 @@
 // told the run ended: it prints nothing and waits forever. The error itself
 // only reaches Studio's Output window.
 //
-// Two ways in, one cause:
+// Three ways in, one cause:
 //   - a returned string that isn't valid UTF-8 (raw bytes from buffer.tostring,
 //     string.char(0xFF), ...): HttpService:JSONEncode throws "Can't convert to
 //     JSON" — on the wire copy, --show-return, and .json return files alike.
+//   - any other value JSONEncode refuses (a boolean table key: "Invalid table
+//     key type used"), whose bare message doesn't say it was the return value.
 //   - a return file that can't be written: fs.open's rpc error is raised in
 //     the runner.
 //
@@ -74,6 +76,14 @@ describe("unencodable return values end the run (no hang)", () => {
     expect(r.exitCode, output).toBe(1);
     expect(output).toContain("result.head");
     expect(output).toContain("UTF-8");
+  });
+
+  it("a value JSON can't encode for another reason fails and says it was the return value", () => {
+    const r = run(["--source", "return { flags = { [true] = 1 } }"]);
+    const output = r.stdout + r.stderr;
+    expect(r.exitCode, output).toBe(1);
+    expect(output).toContain("couldn't encode the return value as JSON");
+    expect(output).toContain("Invalid table key type");
   });
 
   it("a return file that can't be written fails and names the path", () => {
