@@ -125,8 +125,9 @@ return function(rpc, fs, stream, normalize, serializeToLuau, runtime, createScen
 
 	-- Write `value` to `path` as a Luau module (`return <value>`), so the data
 	-- can be required straight back into Studio. Roblox types round-trip via
-	-- their constructors (vectors, CFrames, colors, enums, …); anything with no
-	-- source representation (Instances, functions) becomes its `tostring`.
+	-- their constructors (vectors, CFrames, colors, enums, …) and buffers via
+	-- `buffer.fromstring`; anything with no source representation (Instances,
+	-- functions) becomes its `tostring`.
 	--
 	-- This is the same normalize → serialize → write path `--return <file>.luau`
 	-- uses; that flag calls straight through here.

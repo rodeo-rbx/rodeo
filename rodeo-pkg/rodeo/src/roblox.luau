@@ -95,7 +95,8 @@ end
 
 --- Writes `value` to `path` as a Luau module (`return <value>`), so the data
 --- can be required straight back into Studio. Roblox types round-trip through
---- their constructors (vectors, CFrames, colors, enums, …); values with no
+--- their constructors (vectors, CFrames, colors, enums, …), buffers through
+--- `buffer.fromstring`, and strings keep their exact bytes; values with no
 --- source representation (Instances, functions) become their `tostring`.
 --- Parent directories are created as needed. This is the same path
 --- `--return <file>.luau` uses.

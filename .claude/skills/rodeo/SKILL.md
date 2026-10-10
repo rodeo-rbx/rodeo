@@ -336,8 +336,9 @@ roblox.exportEditableScene(path, sceneOrRoots, options?) -> { string } -- portab
 ```
 
 `bake` emits `return <value>` and writes Roblox types as constructors
-(vectors, CFrames, colors, enums), so you can require the file straight back
-into Studio. Instances and functions become their `tostring`. `bake` creates
+(vectors, CFrames, colors, enums) and buffers as `buffer.fromstring`, so you
+can require the file straight back into Studio. Strings keep their exact
+bytes. Instances and functions become their `tostring`. `bake` creates
 parent directories as needed.
 
 `importInstances` and `exportInstances` handle arbitrarily large models. The file extension

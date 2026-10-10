@@ -424,6 +424,92 @@ export function returnFile(run: RunFn): void {
       rmIfExists(path);
     }
   });
+
+  // Luau strings are bytes. A .luau return file must hold any of them so the
+  // value requires back unchanged. Control bytes used to be written raw, which
+  // is not valid Luau source (a NUL inside a literal reads as a malformed
+  // string); bytes that aren't UTF-8 couldn't be written at all.
+  it("round-trips control bytes through .luau via require", async () => {
+    const relPathNoExt = `.rodeo/.temp/rodeo-rt-${randomUUID()}`;
+    const relPath = `${relPathNoExt}.luau`;
+    const bytes = "string.char(0, 1, 7, 8, 11, 12, 27, 31, 127)";
+    try {
+      const writeResult = await run({ source: `return { s = "a" .. ${bytes} .. "b" }`, returnFile: relPath });
+      expect(writeResult.ok).toBe(true);
+
+      const reloaded = await run({
+        source: `return require("./${relPathNoExt}").s == "a" .. ${bytes} .. "b"`,
+      });
+      expect(reloaded.ok).toBe(true);
+      expect(reloaded.return).toBe(true);
+    } finally {
+      rmIfExists(relPath);
+    }
+  });
+
+  it("round-trips bytes that aren't UTF-8 through .luau via require", async () => {
+    const relPathNoExt = `.rodeo/.temp/rodeo-rt-${randomUUID()}`;
+    const relPath = `${relPathNoExt}.luau`;
+    const bytes = "(function() local t = {} for i = 128, 255 do t[#t + 1] = string.char(i) end return table.concat(t) end)()";
+    try {
+      const writeResult = await run({ source: `return { s = ${bytes} }`, returnFile: relPath });
+      expect(writeResult.ok).toBe(true);
+
+      const reloaded = await run({
+        source: `return require("./${relPathNoExt}").s == ${bytes}`,
+      });
+      expect(reloaded.ok).toBe(true);
+      expect(reloaded.return).toBe(true);
+    } finally {
+      rmIfExists(relPath);
+    }
+  });
+
+  // A buffer is the type for binary data, tagged like the Roblox types:
+  // base64 in JSON, buffer.fromstring in .luau.
+  const BUFFER_SOURCE = "return { data = buffer.fromstring(string.char(0, 255, 65)) }";
+
+  it("writes a buffer to .json as a tagged base64 struct", async () => {
+    const path = mkTmp(".json");
+    try {
+      const result = await run({ source: BUFFER_SOURCE, returnFile: path });
+      expect(result.ok).toBe(true);
+      const parsed = JSON.parse(readFileSync(path, "utf-8"));
+      expect(parsed.data).toEqual({ type: "buffer", value: "AP9B" });
+    } finally {
+      rmIfExists(path);
+    }
+  });
+
+  it("writes a buffer to .luau as buffer.fromstring", async () => {
+    const path = mkTmp(".luau");
+    try {
+      const result = await run({ source: BUFFER_SOURCE, returnFile: path });
+      expect(result.ok).toBe(true);
+      const content = readFileSync(path, "utf-8");
+      expect(content).toContain('["data"] = buffer.fromstring("\\x00\\xFFA")');
+    } finally {
+      rmIfExists(path);
+    }
+  });
+
+  it("round-trips a buffer through .luau via require", async () => {
+    const relPathNoExt = `.rodeo/.temp/rodeo-rt-${randomUUID()}`;
+    const relPath = `${relPathNoExt}.luau`;
+    try {
+      const writeResult = await run({ source: BUFFER_SOURCE, returnFile: relPath });
+      expect(writeResult.ok).toBe(true);
+
+      const reloaded = await run({
+        source: `local data = require("./${relPathNoExt}").data
+return typeof(data) == "buffer" and buffer.tostring(data) == string.char(0, 255, 65)`,
+      });
+      expect(reloaded.ok).toBe(true);
+      expect(reloaded.return).toBe(true);
+    } finally {
+      rmIfExists(relPath);
+    }
+  });
 }
 
 // ── scriptFile (2 tests) ─────────────────────────────────────────────────

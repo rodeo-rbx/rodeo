@@ -1,14 +1,30 @@
 -- Luau table serializer: converts normalized values to Luau source code
 -- Returns the serializeToLuau function
 
-local function escapeString(str)
-	local r = str
-	r = r:gsub("\\", "\\\\")
-	r = r:gsub("\n", "\\n")
-	r = r:gsub("\t", "\\t")
-	r = r:gsub("\r", "\\r")
-	r = r:gsub('"', '\\"')
-	return r
+local EncodingService = game:GetService("EncodingService")
+
+-- The escape for every byte, as gsub's replacement table. Luau strings are
+-- bytes and the file must require back to the same ones: control bytes aren't
+-- valid inside a literal (a raw NUL reads as a malformed string), and bytes
+-- that aren't UTF-8 can't cross rodeo's UTF-8-only file transport.
+local ESCAPES = {}
+for byte = 0, 255 do
+	ESCAPES[string.char(byte)] = string.format("\\x%02X", byte)
+end
+ESCAPES["\\"] = "\\\\"
+ESCAPES['"'] = '\\"'
+ESCAPES["\n"] = "\\n"
+ESCAPES["\t"] = "\\t"
+ESCAPES["\r"] = "\\r"
+
+-- Printable ASCII other than `"` and `\` is written as is, as is UTF-8 text
+-- beyond ASCII, so it stays readable. A string that isn't valid UTF-8 has
+-- every byte outside printable ASCII escaped. In the classes, `]` comes first
+-- (where it's literal) and the ranges are ]-~, space-!, #-[ and 0x80-0xFF.
+local KEEP_TEXT = "[^]-~ -!#-[\128-\255]"
+local KEEP_ASCII = "[^]-~ -!#-[]"
+local function escapeString(str: string): string
+	return (string.gsub(str, if utf8.len(str) then KEEP_TEXT else KEEP_ASCII, ESCAPES))
 end
 
 local function getIndent(depth)
@@ -77,6 +93,11 @@ local TYPE_EMITTERS = {
 	-- EnumItem rather than a string that merely looks like one.
 	EnumItem = function(v)
 		return v
+	end,
+	-- normalize carries the bytes as base64.
+	buffer = function(v)
+		local bytes = buffer.tostring(EncodingService:Base64Decode(buffer.fromstring(v)))
+		return 'buffer.fromstring("' .. escapeString(bytes) .. '")'
 	end,
 }
 

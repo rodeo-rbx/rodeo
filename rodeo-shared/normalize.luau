@@ -1,6 +1,8 @@
 -- Type converters: Roblox types → JSON-compatible tagged structs
 -- Returns the normalize function
 
+local EncodingService = game:GetService("EncodingService")
+
 local TYPE_CONVERTERS = {
 	Vector3 = function(v)
 		return { type = "Vector3", value = { v.X, v.Y, v.Z } }
@@ -33,6 +35,10 @@ local TYPE_CONVERTERS = {
 	-- file round-trips as an EnumItem instead of a lookalike string.
 	EnumItem = function(v)
 		return { type = "EnumItem", value = tostring(v) }
+	end,
+	-- Binary data. JSON strings must be UTF-8, so the bytes travel as base64.
+	buffer = function(v)
+		return { type = "buffer", value = buffer.tostring(EncodingService:Base64Encode(v)) }
 	end,
 }
 

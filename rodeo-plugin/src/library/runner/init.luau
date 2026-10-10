@@ -234,8 +234,45 @@ end
 
 task.wait(0.2) -- Allow final logs to flush
 logConnection:Disconnect()
-if outputFileStream then
-	apis.stream.close(outputFileStream)
+
+-- The Luau path of the first string in a normalized value that isn't valid
+-- UTF-8 ("result.head", "result[2]"), or nil. Luau strings are bytes; JSON
+-- strings, keys included, must be UTF-8.
+local function findNonUtf8(value: any, path: string): string?
+	if type(value) == "string" then
+		return if utf8.len(value) == nil then path else nil
+	elseif type(value) ~= "table" then
+		return nil
+	end
+	for key, child in value do
+		if type(key) == "string" and utf8.len(key) == nil then
+			return `a key of {path}`
+		end
+		local childPath = if type(key) == "string" and string.match(key, "^[%a_][%w_]*$")
+			then `{path}.{key}`
+			else `{path}[{if type(key) == "string" then string.format("%q", key) else tostring(key)}]`
+		local found = findNonUtf8(child, childPath)
+		if found then
+			return found
+		end
+	end
+	return nil
+end
+
+local function encodeJson(value: any): string
+	local encoded, json = pcall(HttpService.JSONEncode, HttpService, value)
+	if encoded then
+		return json
+	end
+	local where = findNonUtf8(value, "result")
+	if where then
+		error(
+			`{where} is a string that isn't valid UTF-8, which JSON can't carry; return binary data as a buffer `
+				.. "(buffer.fromstring), or write the value to a .luau file with --return <path>.luau",
+			0
+		)
+	end
+	error(json, 0)
 end
 
 -- Handle return value output. `returnValueJson` is the canonical wire-format
@@ -244,9 +281,22 @@ end
 -- file captures the value instead, keeping it off the done message (a single
 -- unchunkable hop whose downstream transports cap at a few MB). File and
 -- stdout writes are size-unbounded: stream.write chunks large payloads.
+--
+-- All of this runs after the module returned, outside its xpcall, and the
+-- results event below is the only thing that tells the client the run ended.
+-- A failure here (a value JSON can't carry, a file that can't be written)
+-- becomes the run's error; escaping instead leaves the client waiting forever.
 
 local returnValueJson: string? = nil
-if success and result ~= nil then
+local finished, finishError = pcall(function()
+	if outputFileStream then
+		apis.stream.close(outputFileStream)
+	end
+
+	if not success or result == nil then
+		return
+	end
+
 	local isLuauReturnFile = returnFile ~= "" and string.match(returnFile, "%.luau?$") ~= nil
 
 	-- The JSON form backs the wire field, --show-return, and non-.luau return
@@ -254,18 +304,24 @@ if success and result ~= nil then
 	-- (potentially huge) normalize + encode is skipped when nothing consumes it.
 	local json: string? = nil
 	if not isLuauReturnFile or showReturn then
-		json = HttpService:JSONEncode(normalize(result))
+		json = encodeJson(normalize(result))
 	end
 
 	if returnFile ~= "" then
-		if isLuauReturnFile then
-			-- Same normalize → serialize → write path as the public API; one
-			-- implementation so the flag and roblox.bake can't drift.
-			apis.roblox.bake(returnFile, result)
-		else
-			local f = apis.fs.open(returnFile, "w")
-			apis.stream.write(f, json :: string)
-			apis.stream.close(f)
+		-- The host's write error doesn't name the file.
+		local written, writeError = pcall(function()
+			if isLuauReturnFile then
+				-- Same normalize → serialize → write path as the public API; one
+				-- implementation so the flag and roblox.bake can't drift.
+				apis.roblox.bake(returnFile, result)
+			else
+				local f = apis.fs.open(returnFile, "w")
+				apis.stream.write(f, json :: string)
+				apis.stream.close(f)
+			end
+		end)
+		if not written then
+			error(`couldn't write the return value to {returnFile}: {writeError}`, 0)
 		end
 	end
 
@@ -298,6 +354,11 @@ if success and result ~= nil then
 			runError = sizeMsg .. "; write it to a file with --return <path>"
 		end
 	end
+end)
+-- A run whose module already failed keeps the module's error.
+if not finished and success then
+	success = false
+	runError = tostring(finishError)
 end
 
 -- Clean up process-scoped _G entry
