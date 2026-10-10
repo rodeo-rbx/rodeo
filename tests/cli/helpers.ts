@@ -195,17 +195,23 @@ export function pluginFileFor(masterPort: number): string {
   return join(pluginsDir(), `rodeo-${cliBuildId()}-${masterPort + 1}.rbxm`);
 }
 
-// The record a backend writes when it exits and leaves its plugin file
-// installed (plugin_sweep::mark_kept): under the OS cache directory, its
-// modification time is when. Other backends' sweeps keep the file for an hour
-// after that; backdating the record lets a test reach the end of the window.
-export function keptMarkerFor(masterPort: number): string {
+// Where a backend records that it exited and left its plugin file installed
+// (plugin_sweep::mark_kept): one file per plugin file, same name, under the
+// OS cache directory; its modification time is when.
+export function keptMarkersDir(): string {
   const cache = IS_WINDOWS
     ? process.env.LOCALAPPDATA ?? ""
     : process.platform === "darwin"
       ? join(homedir(), "Library", "Caches")
       : process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-  return join(cache, "rodeo", "kept-plugins", `rodeo-${cliBuildId()}-${masterPort + 1}.rbxm`);
+  return join(cache, "rodeo", "kept-plugins");
+}
+
+// The record for this build's serve on `masterPort`. Other backends' sweeps
+// keep the plugin file for an hour after it; backdating the record lets a
+// test reach the end of the window.
+export function keptMarkerFor(masterPort: number): string {
+  return join(keptMarkersDir(), `rodeo-${cliBuildId()}-${masterPort + 1}.rbxm`);
 }
 
 // Remove the plugin file a stopped serve on `masterPort` left installed, and

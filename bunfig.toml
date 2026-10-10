@@ -1,0 +1,3 @@
+[test]
+# Run-wide hooks: removes the plugin files test serves leave (see the file).
+preload = ["./tests/setup.ts"]
