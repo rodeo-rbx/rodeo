@@ -156,7 +156,9 @@ pub enum Commands {
 
         /// Re-evaluate instance requires instead of reusing the VM's require
         /// cache. By default a require resolves to the live module the game is
-        /// already using; this gives the run its own fresh copies.
+        /// already using, unless the module's source changed since it was
+        /// first required; this gives the run its own fresh copies of all of
+        /// them.
         #[arg(long)]
         reload_requires: bool,
 
