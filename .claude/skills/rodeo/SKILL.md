@@ -2,12 +2,12 @@
 name: rodeo
 description: CLI tool for Roblox Studio that lets you create studio instances, and run code in any studio environment. Includes commands, flags, DOM targeting, directives, return values, and @rodeo APIs. Use when writing rodeo commands, scripts, or working with Roblox Studio.
 metadata:
-  version: 1.5.0-rc.12
+  version: 1.5.0-rc.13
 ---
 
 # rodeo
 
-This skill describes rodeo **1.5.0-rc.12**. Projects pin their own rodeo version, so
+This skill describes rodeo **1.5.0-rc.13**. Projects pin their own rodeo version, so
 check `rodeo --version` in the project: if it differs, this copy of the skill may
 document flags or APIs that binary does not have (or lack ones it does).
 

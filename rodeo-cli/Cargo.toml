@@ -1,6 +1,6 @@
 [package]
 name = "rodeo"
-version = "1.5.0-rc.12"
+version = "1.5.0-rc.13"
 edition = "2021"
 description = "Run Luau code inside Roblox Studio"
 license = "MIT"
