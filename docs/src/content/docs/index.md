@@ -26,4 +26,4 @@ The CLI is a workflow tool built around that runtime. It launches Studio, lets y
 - [CLI usage](/rodeo/getting-started/cli-usage/)
 - [Runtime usage](/rodeo/getting-started/runtime-usage/)
 - [CLI reference](/rodeo/cli/)
-- [@rodeo runtime](/rodeo/runtime/)
+- @rodeo runtime: [fs](/rodeo/runtime/fs/), [io](/rodeo/runtime/io/), [process](/rodeo/runtime/process/), [stream](/rodeo/runtime/stream/), [roblox](/rodeo/runtime/roblox/)

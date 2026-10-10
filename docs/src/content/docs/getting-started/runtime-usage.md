@@ -12,7 +12,7 @@ local stream = require("@rodeo/stream")
 local roblox = require("@rodeo/roblox")
 ```
 
-These modules let your in-Studio code touch the host machine: read/write files, run shell commands, pipe to stdout, load `.rbxm` fixtures. Full reference is in [@rodeo runtime](/rodeo/runtime/); the examples below show common patterns.
+These modules let your in-Studio code touch the host machine: read/write files, run shell commands, pipe to stdout, load `.rbxm` fixtures. Full reference: [fs](/rodeo/runtime/fs/), [io](/rodeo/runtime/io/), [process](/rodeo/runtime/process/), [stream](/rodeo/runtime/stream/), [roblox](/rodeo/runtime/roblox/); the examples below show common patterns.
 
 ## Reading and writing files
 
@@ -186,4 +186,4 @@ Useful for staging test fixtures, snapshotting Studio state, or moving subtrees 
 
 ## Where to go next
 
-- **[@rodeo runtime](/rodeo/runtime/)** — full API reference for `fs`, `io`, `process`, `stream`, `roblox`
+- **@rodeo runtime reference**: [fs](/rodeo/runtime/fs/), [io](/rodeo/runtime/io/), [process](/rodeo/runtime/process/), [stream](/rodeo/runtime/stream/), [roblox](/rodeo/runtime/roblox/)

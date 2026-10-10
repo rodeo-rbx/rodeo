@@ -175,10 +175,10 @@ Every command resolves its port as `--port`, then `RODEO_PORT`, then 44872. Serv
 
 ## Docs
 
-**[revvy02.github.io/rodeo](https://revvy02.github.io/rodeo/)**
+**[rodeo-rbx.github.io/rodeo](https://rodeo-rbx.github.io/rodeo/)**
 
-- [CLI reference](https://revvy02.github.io/rodeo/cli/)
-- [@rodeo standard library](https://revvy02.github.io/rodeo/runtime/)
+- [CLI reference](https://rodeo-rbx.github.io/rodeo/cli/)
+- [@rodeo standard library](https://rodeo-rbx.github.io/rodeo/getting-started/runtime-usage/)
 
 ## Companion tools
 
