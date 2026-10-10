@@ -24,8 +24,6 @@ local function wireOptions(options: any?): any?
 end
 
 return function(rpc, scriptArgs, hostInfo, runtime)
-	runtime = runtime or _G.__rodeo_runtime_proto -- standalone hosts (rodeo-shared/run.luau)
-
 	local process = {}
 
 	-- Properties

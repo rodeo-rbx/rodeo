@@ -2,8 +2,8 @@
 -- plus bake (Luau-source data files).
 -- Returns a factory: (rpc, fs, stream, normalize, serializeToLuau, runtime, createScene, sceneMotion, scenePrimitives, sceneNativeMotion) -> roblox module.
 -- `runtime` is the runner's proto module, captured here rather than read from
--- _G.__rodeo_runtime_proto at call time: several rodeo plugins can share this
--- VM, and that global holds whichever build's runner set it last.
+-- a global at call time: several rodeo plugins can share this VM, and a global
+-- would hold whichever build's runner set it last.
 
 return function(rpc, fs, stream, normalize, serializeToLuau, runtime, createScene, sceneMotion, scenePrimitives, sceneNativeMotion)
 	local roblox = {}

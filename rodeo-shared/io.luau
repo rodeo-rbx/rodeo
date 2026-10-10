@@ -2,7 +2,6 @@
 -- Factory: (rpc, runtime) -> io. `runtime` is the caller's proto module,
 -- passed in rather than read from _G: several rodeo plugins can share one VM.
 return function(rpc, runtime)
-	runtime = runtime or _G.__rodeo_runtime_proto -- standalone hosts (rodeo-shared/run.luau)
 	local io = {}
 
 	io.stdin = { __handle = "stdin" }
