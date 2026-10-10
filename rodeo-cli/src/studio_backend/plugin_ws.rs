@@ -199,7 +199,15 @@ pub async fn handle_studio_client<S, R>(
         if proto::version_check_skipped() {
             tracing::warn!("{msg} ({} set, accepting)", proto::SKIP_VERSION_CHECK_ENV);
         } else {
-            tracing::warn!("{msg}; parking this connection unregistered (the plugin shows the mismatch and reconnects when this backend exits)");
+            // A plugin reporting no version is the legacy shared rodeo.rbxm
+            // that pre-1.5 rodeos write. Studio loads it beside ours, so it
+            // dials this port from every DataModel of every session: parking
+            // it is expected, and plugin_sweep notes the file once at startup.
+            if plugin_version.is_empty() {
+                tracing::debug!("{msg}; parking this connection unregistered");
+            } else {
+                tracing::warn!("{msg}; parking this connection unregistered (the plugin shows the mismatch and reconnects when this backend exits)");
+            }
             let _ = ws_tx.send(Message::Text(serde_json::to_string(&welcome_msg()).unwrap().into())).await;
             while let Some(Ok(msg)) = ws_rx.next().await {
                 if matches!(msg, Message::Close(_)) {

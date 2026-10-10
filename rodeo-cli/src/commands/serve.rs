@@ -156,7 +156,10 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
     crate::studio_backend::plugin_sweep::sweep().await;
     match crate::studio_backend::launch::install_plugin(port) {
         Ok(path) => tracing::info!(path = %path.display(), "installed rodeo plugin"),
-        Err(e) => tracing::warn!("failed to install rodeo plugin: {e}"),
+        // An error, not a warning: without its plugin no Studio this backend
+        // launches can connect, so a launch then fails only as "the plugin
+        // never loaded" — this line is the cause, and quiet runs show errors.
+        Err(e) => tracing::error!("failed to install rodeo plugin: {e}"),
     }
 
     let accept_state = state.clone();
@@ -263,6 +266,32 @@ pub struct ServeHandle {
 }
 
 impl ServeHandle {
+    fn spawn(&mut self, exe: &std::path::Path, args: &[&str]) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let (child, job) = spawn_in_group(exe, args)?;
+            self.children.push(child);
+            self.jobs.push(job);
+        }
+        #[cfg(not(windows))]
+        self.children.push(spawn_in_group(exe, args)?);
+        Ok(())
+    }
+
+    /// Startup waits for the master to answer and the backend to register. A
+    /// child that exited instead never will (the master returns when it can't
+    /// bind its port, the backend when it can't reach the master): fail
+    /// rather than wait forever. Its error is on stderr even in a quiet run.
+    fn check_started(&mut self) -> Result<()> {
+        for (child, role) in self.children.iter_mut().zip(["master", "studio backend"]) {
+            if let Some(status) = child.try_wait().with_context(|| format!("checking rodeo's {role}"))? {
+                let logs = std::env::var("RODEO_LOG_DIR").unwrap_or_else(|_| ".rodeo/.temp/logs".to_string());
+                anyhow::bail!("rodeo's {role} exited while starting ({status}); its log is in {logs}");
+            }
+        }
+        Ok(())
+    }
+
     pub async fn wait_for_shutdown(mut self) {
         self.shutdown_rx.recv().await;
         tracing::info!("Shutting down...");
@@ -336,51 +365,40 @@ fn spawn_in_group(exe: &std::path::Path, args: &[&str]) -> Result<SpawnedChild> 
 /// Waits for the studio backend to register before returning.
 pub async fn start_full_serve(port: u16) -> Result<ServeHandle> {
     let exe = std::env::current_exe().context("cannot find own binary")?;
-    let mut children: Vec<Box<dyn ChildWrapper>> = Vec::new();
-    #[cfg(windows)]
-    let mut jobs: Vec<KillOnCloseJob> = Vec::new();
     let ppid = std::process::id().to_string();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    // Built first so a startup failure drops it, which stops the children
+    // that did start.
+    let mut handle = ServeHandle {
+        shutdown_rx,
+        children: Vec::new(),
+        #[cfg(windows)]
+        jobs: Vec::new(),
+    };
 
-    // Spawn master
-    #[cfg(windows)]
-    {
-        let (child, job) = spawn_in_group(&exe, &["__master", "--port", &port.to_string(), "--ppid", &ppid])?;
-        children.push(child);
-        jobs.push(job);
-    }
-    #[cfg(not(windows))]
-    children.push(spawn_in_group(&exe, &["__master", "--port", &port.to_string(), "--ppid", &ppid])?);
-
-    // Wait for master to be healthy
+    // Spawn master and wait for it to be healthy
+    handle.spawn(&exe, &["__master", "--port", &port.to_string(), "--ppid", &ppid])?;
     let rc = RodeoClient::connect("localhost", port)?;
     while !rc.is_healthy().await {
+        handle.check_started()?;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    // Spawn studio backend
+    // Spawn studio backend and wait for it to register
     let studio_port = port + 1;
     let studio_port_str = studio_port.to_string();
     let port_str = port.to_string();
-    #[cfg(windows)]
-    {
-        let (child, job) = spawn_in_group(&exe, &["__studio-backend", "--port", &studio_port_str, "--master-host", "localhost", "--master-port", &port_str, "--ppid", &ppid])?;
-        children.push(child);
-        jobs.push(job);
-    }
-    #[cfg(not(windows))]
-    children.push(spawn_in_group(&exe, &["__studio-backend", "--port", &studio_port_str, "--master-host", "localhost", "--master-port", &port_str, "--ppid", &ppid])?);
-
-    // Wait for the studio backend to register
+    handle.spawn(&exe, &["__studio-backend", "--port", &studio_port_str, "--master-host", "localhost", "--master-port", &port_str, "--ppid", &ppid])?;
     loop {
         let backends = rc.list_backends(None).await.unwrap_or_default();
         if backends.iter().any(|b| b.kind == "studio") { break; }
+        handle.check_started()?;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     tracing::info!("Serving on port {port}");
 
     // Signal handler
-    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -399,12 +417,7 @@ pub async fn start_full_serve(port: u16) -> Result<ServeHandle> {
         let _ = shutdown_tx.try_send(());
     });
 
-    Ok(ServeHandle {
-        shutdown_rx,
-        children,
-        #[cfg(windows)]
-        jobs,
-    })
+    Ok(handle)
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ use crate::transport::Transport;
 use crate::dom::Dom;
 
 const POLL_INTERVAL_MS: u64 = 500;
+const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The root client — owns the transport shared across all handles it mints.
 #[derive(Clone)]
@@ -30,12 +31,14 @@ impl RodeoClient {
     // Health & state
     // -----------------------------------------------------------------------
 
+    /// Whether a rodeo master answers on this port. Bounded: something else
+    /// holding the port can accept the connection and never reply, which left
+    /// every caller (a run deciding whether to start its own serve, the serve
+    /// waiting for its master) waiting forever. A master answers in ms.
     pub async fn is_healthy(&self) -> bool {
-        self.transport
-            .master()
-            .health(proto::HealthRequest::default())
-            .await
-            .is_ok()
+        let master = self.transport.master();
+        let probe = master.health(proto::HealthRequest::default());
+        matches!(tokio::time::timeout(HEALTH_PROBE_TIMEOUT, probe).await, Ok(Ok(_)))
     }
 
     /// Raw health probe. Errors if the master is unreachable.

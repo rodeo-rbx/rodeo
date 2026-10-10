@@ -37,10 +37,11 @@ pub fn filename_timestamp() -> String {
 pub fn init(role: &'static str, bootstrap_id: &str) {
     let verbose = std::env::var("RODEO_VERBOSE").is_ok();
     // Set by the parent rodeo-run process when this subprocess was
-    // auto-spawned for a one-shot run (script execution, not interactive
-    // serve). Users want script output, not serve plumbing — so default
-    // stderr to warn instead of info. The file layer still runs at debug
-    // so post-mortem detail is preserved at .rodeo/.temp/logs/.
+    // auto-spawned for a run (not an interactive serve). The run's terminal
+    // carries the run's own output: stderr gets errors only. Whatever a run
+    // needs to know reaches it through the run itself (launch and mode
+    // failures, disconnects); a serve's warnings are about the serve. The
+    // file layer still runs at debug, so everything is at .rodeo/.temp/logs/.
     let quiet = std::env::var("RODEO_QUIET").is_ok();
     let no_color = std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
     let force_color = std::env::var("FORCE_COLOR").is_ok_and(|v| !v.is_empty());
@@ -81,7 +82,7 @@ pub fn init(role: &'static str, bootstrap_id: &str) {
         if verbose {
             EnvFilter::new("rodeo=debug,rbx_control=debug,launch_control=debug")
         } else if quiet {
-            EnvFilter::new("rodeo=warn,rbx_control=warn,launch_control=warn")
+            EnvFilter::new("rodeo=error,rbx_control=error,launch_control=error")
         } else {
             EnvFilter::new("rodeo=info,rbx_control=info,launch_control=info")
         }

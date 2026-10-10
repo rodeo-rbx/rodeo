@@ -379,11 +379,21 @@ impl PlaceArgs {
     }
 }
 
+/// A `--fflag.override` value must be `Key=Value`. Checked when the command
+/// parses, where a mistake fails it: the serve applies overrides at launch and
+/// could only skip a malformed one in its own log.
+fn parse_fflag_override(s: &str) -> Result<String, String> {
+    match s.split_once('=') {
+        Some((key, _)) if !key.trim().is_empty() => Ok(s.to_string()),
+        _ => Err(format!("expected KEY=VALUE, got '{s}'")),
+    }
+}
+
 /// Shared args for FFlag configuration
 #[derive(clap::Args, Clone, Default)]
 pub struct FflagArgs {
     /// Set FFlag override (Key=Value, repeatable)
-    #[arg(long = "fflag.override", value_name = "KEY=VALUE", help_heading = "FFlags")]
+    #[arg(long = "fflag.override", value_name = "KEY=VALUE", help_heading = "FFlags", value_parser = parse_fflag_override)]
     pub fflag_override: Vec<String>,
 
     /// Load FFlag overrides from a JSON file
@@ -451,6 +461,32 @@ mod port_resolution_tests {
                 master_port.unwrap_or(config::SERVE_PORT),
             ),
             _ => unreachable!(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fflag_override_tests {
+    use super::*;
+
+    fn parse(value: &str) -> Result<(), String> {
+        Cli::try_parse_from(["rodeo", "run", "--source", "return 1", "--fflag.override", value])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn accepts_key_value() {
+        assert!(parse("EnableLoadModule=true").is_ok());
+        assert!(parse("FIntFoo=5").is_ok());
+        assert!(parse("FStringBar=").is_ok());
+    }
+
+    #[test]
+    fn rejects_values_without_a_key() {
+        for bad in ["EnableLoadModule", "=true", " =1"] {
+            let err = parse(bad).expect_err(bad);
+            assert!(err.contains("expected KEY=VALUE"), "{bad}: {err}");
         }
     }
 }
