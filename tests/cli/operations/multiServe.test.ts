@@ -1,11 +1,12 @@
 import { describe, it, expect, afterAll } from "bun:test";
 import { existsSync } from "node:fs";
-import { cliStudioHandle, pluginFileFor, runRodeo, waitUntil } from "../helpers.js";
+import { cliStudioHandle, keptMarkerFor, pluginFileFor, removeKeptPluginFile, runRodeo } from "../helpers.js";
 
 // Two serves of the same build on different ports, running side by side. Each
 // studio backend installs its own `rodeo-<build>-<port>.rbxm`, owns only the
-// Studios it launched, and removes its file when it exits. The same
-// mechanics let two different builds coexist (crossVersion.test.ts).
+// Studios it launched, and leaves its file installed when it exits, for the
+// next serve on its port. The same mechanics let two different builds coexist
+// (crossVersion.test.ts).
 //
 // Note on ordering: this suite brings both serves fully up first, then runs.
 // An early version raced a run against B's startup and flaked once, which was
@@ -29,11 +30,13 @@ function ownedStudios(state: StateJson): string[] {
 }
 
 describe("two serves side by side (CLI)", () => {
-  const a = cliStudioHandle(PORT_A);
-  const b = cliStudioHandle(PORT_B);
+  const a = cliStudioHandle(PORT_A, { keepPluginFile: true });
+  const b = cliStudioHandle(PORT_B, { keepPluginFile: true });
   afterAll(async () => {
     await b.close();
     await a.close();
+    removeKeptPluginFile(PORT_A);
+    removeKeptPluginFile(PORT_B);
   });
 
   it("each backend installs its own plugin file and neither sees the other's Studio", async () => {
@@ -69,12 +72,16 @@ describe("two serves side by side (CLI)", () => {
     expect((aState.studios ?? []).map((s) => s.studioId)).not.toContain(bStudio);
   });
 
-  it("a backend removes its plugin file on exit and leaves the other's", async () => {
+  it("a backend leaves its plugin file installed on exit and records it", async () => {
     await b.close();
-    await waitUntil(() => !existsSync(pluginFileFor(PORT_B)), 20_000, "B's plugin file to be removed");
+    expect(existsSync(pluginFileFor(PORT_B))).toBe(true);
+    expect(existsSync(keptMarkerFor(PORT_B))).toBe(true);
+    // A, still running, owns its file: no record.
     expect(existsSync(pluginFileFor(PORT_A))).toBe(true);
+    expect(existsSync(keptMarkerFor(PORT_A))).toBe(false);
 
     await a.close();
-    await waitUntil(() => !existsSync(pluginFileFor(PORT_A)), 20_000, "A's plugin file to be removed");
+    expect(existsSync(pluginFileFor(PORT_A))).toBe(true);
+    expect(existsSync(keptMarkerFor(PORT_A))).toBe(true);
   });
 });

@@ -155,7 +155,11 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
     // this port leaves Studios that still hold the plugin untouched.
     crate::studio_backend::plugin_sweep::sweep().await;
     match crate::studio_backend::launch::install_plugin(port) {
-        Ok(path) => tracing::info!(path = %path.display(), "installed rodeo plugin"),
+        Ok(path) => {
+            // A file an earlier backend left on exit is this backend's now.
+            crate::studio_backend::plugin_sweep::clear_kept(&path);
+            tracing::info!(path = %path.display(), "installed rodeo plugin");
+        }
         // An error, not a warning: without its plugin no Studio this backend
         // launches can connect, so a launch then fails only as "the plugin
         // never loaded" — this line is the cause, and quiet runs show errors.
@@ -216,11 +220,9 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
         let mut guard = state.lock().await;
         let count = guard.studio_instances.len();
         tracing::info!("cleaning up {count} studio instance(s)...");
-        let mut any_detached = false;
         for (id, inst) in guard.studio_instances.drain() {
             if let Some(studio) = inst.studio {
                 if studio.detached() {
-                    any_detached = true;
                     tracing::info!(studio_id = id.as_str(), "studio is detached, skipping kill (process will survive)");
                     // Arc drop runs rodeo::Studio::Drop → rbx_control::Studio::Drop,
                     // both respect `detached` and only restore fflags/layout.
@@ -231,17 +233,16 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
             }
         }
 
-        // This backend's plugin file goes with it — unless a detached Studio
-        // still runs the plugin. Deleting the file would unload it from that
-        // Studio at once, so leave it for the sweep a later backend runs once
-        // the Studio is gone.
-        if any_detached {
-            tracing::info!("leaving plugin file installed: a detached Studio still uses it");
-        } else {
-            match crate::studio_backend::launch::remove_plugin(port) {
-                Ok(()) => tracing::info!("removed this backend's plugin file"),
-                Err(e) => tracing::warn!("failed to remove plugin file: {e}"),
-            }
+        // This backend's plugin file stays installed: the next serve of this
+        // build on this port finds it unchanged and launches Studio without
+        // waiting for a fresh file to settle, and a detached Studio may still
+        // run it. The record lets other backends' sweeps leave it for
+        // plugin_sweep::KEEP_FOR; they remove it after that.
+        let kept = crate::studio_backend::launch::plugin_path(port)
+            .and_then(|path| Ok(crate::studio_backend::plugin_sweep::mark_kept(&path)?));
+        match kept {
+            Ok(()) => tracing::info!("left this backend's plugin file installed for the next serve on this port"),
+            Err(e) => tracing::warn!("couldn't record that this backend's plugin file stays installed: {e}"),
         }
     }
 

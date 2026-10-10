@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killLaunchedStudios, pluginFileFor, pluginsDir, runRodeo, waitUntil } from "../helpers.js";
+import { killLaunchedStudios, pluginFileFor, pluginsDir, removeKeptPluginFile, runRodeo, waitUntil } from "../helpers.js";
 
 // Two rodeo versions side by side, run the way projects run them: each
 // fixture directory pins its rodeo (and port) in its own `.mise.toml`.
@@ -22,6 +22,7 @@ import { killLaunchedStudios, pluginFileFor, pluginsDir, runRodeo, waitUntil } f
 const FIXTURES = join(import.meta.dir, "..", "..", "fixtures", "versions");
 const PREV_DIR = join(FIXTURES, "prev");
 const TREE_DIR = join(FIXTURES, "tree");
+const TREE_PORT = 46800; // tree/.mise.toml's RODEO_PORT
 const PREV_PORT = 46790; // matches prev/.mise.toml; passed explicitly (pre-1.5 ignores the env var)
 const PREV_VERSION_PREFIX = "rodeo 1.4.0-rc.4"; // keep in step with prev/.mise.toml
 
@@ -125,6 +126,7 @@ describe.skipIf(!mise)("two rodeo versions side by side (CLI)", () => {
       } finally {
         tree.kill();
         await tree.exited;
+        removeKeptPluginFile(TREE_PORT);
       }
 
       // The previous release's run must have kept its plugin and finished.
@@ -231,8 +233,8 @@ describe.skipIf(!mise)("a newer plugin against a server older than the version c
     let serve: Spawned | undefined;
     try {
       // This build's plugin for the old backend's port, with no serve of this
-      // build running: a serve installs it, its bytes are kept, the serve
-      // stops (removing its file), and the bytes go back.
+      // build running: a serve installs it and stops, leaving the file
+      // installed. Its bytes are kept to reload the plugin below.
       const tree = Bun.spawn(["rodeo", "serve", "--port", String(PRE_PORT), "--ppid", String(process.pid)], { stdout: "ignore", stderr: "ignore" });
       const plugin = await (async () => {
         try {
@@ -244,8 +246,7 @@ describe.skipIf(!mise)("a newer plugin against a server older than the version c
           await tree.exited;
         }
       })();
-      await waitUntil(() => !existsSync(pluginFile), 20_000, "this build's serve to remove its plugin file");
-      writeFileSync(pluginFile, plugin);
+      expect(existsSync(pluginFile)).toBe(true);
 
       // The old server on the same port. 1.3.0 writes its rodeo.rbxm at
       // startup; give both plugin files time to settle before a Studio starts
@@ -293,7 +294,7 @@ describe.skipIf(!mise)("a newer plugin against a server older than the version c
         await serve.exited;
       }
       killLaunchedStudios(PRE_PORT, since);
-      rmSync(pluginFile, { force: true });
+      removeKeptPluginFile(PRE_PORT);
       rmSync(PRE_LOG, { force: true });
     }
   }, 600_000);

@@ -5,7 +5,7 @@
 // so the shared factories can run against the CLI unchanged.
 
 import type { Subprocess } from "bun";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -193,6 +193,27 @@ export function cliBuildId(): string {
 // The plugin file a serve on `masterPort` installs.
 export function pluginFileFor(masterPort: number): string {
   return join(pluginsDir(), `rodeo-${cliBuildId()}-${masterPort + 1}.rbxm`);
+}
+
+// The record a backend writes when it exits and leaves its plugin file
+// installed (plugin_sweep::mark_kept): under the OS cache directory, its
+// modification time is when. Other backends' sweeps keep the file for an hour
+// after that; backdating the record lets a test reach the end of the window.
+export function keptMarkerFor(masterPort: number): string {
+  const cache = IS_WINDOWS
+    ? process.env.LOCALAPPDATA ?? ""
+    : process.platform === "darwin"
+      ? join(homedir(), "Library", "Caches")
+      : process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  return join(cache, "rodeo", "kept-plugins", `rodeo-${cliBuildId()}-${masterPort + 1}.rbxm`);
+}
+
+// Remove the plugin file a stopped serve on `masterPort` left installed, and
+// its record. Tests use many ports; without this, every later test Studio
+// would load one plugin per port used in the last hour.
+export function removeKeptPluginFile(masterPort: number): void {
+  rmSync(pluginFileFor(masterPort), { force: true });
+  rmSync(keptMarkerFor(masterPort), { force: true });
 }
 
 // Polls `pred` until it holds or `timeoutMs` passes.
@@ -443,6 +464,9 @@ export type CliStudioOpts = {
   /** How long to wait for the launched Studio to register (cloud and Team
    *  Create places take longer than an empty one). */
   timeoutMs?: number;
+  /** Leave the plugin file the serve keeps installed on exit, for tests about
+   *  that file. By default `close` removes it (see removeKeptPluginFile). */
+  keepPluginFile?: boolean;
 };
 
 export function cliStudioHandle(port: number, opts: CliStudioOpts = {}): CliStudioHandle {
@@ -466,8 +490,10 @@ export function cliStudioHandle(port: number, opts: CliStudioOpts = {}): CliStud
       studio = await Promise.race([waitForOwnedStudio(port, opts.timeoutMs), died]);
     },
     close: async () => {
-      bg?.kill();
-      await bg?.exited;
+      if (!bg) return;
+      bg.kill();
+      await bg.exited;
+      if (!opts.keepPluginFile) removeKeptPluginFile(port);
     },
     studio: () => {
       if (!studio) throw new Error("cliStudioHandle: spawn has not resolved");

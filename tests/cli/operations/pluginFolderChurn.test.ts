@@ -23,6 +23,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeKeptPluginFile } from "../helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..", "..");
 const RODEO = join(ROOT, "bin", "rodeo");
@@ -131,6 +132,8 @@ afterAll(async () => {
   await Promise.all(procs.map((p) => p.exited.catch(() => 0)));
   for (const f of ["rodeoChurnProbe.txt", "rodeoChurnProbe.lua"]) rmSync(join(PLUGINS, f), { force: true });
   rmSync(join(PLUGINS, "rodeoChurnProbe"), { recursive: true, force: true });
+  removeKeptPluginFile(PORT_A);
+  removeKeptPluginFile(PORT_B);
 });
 
 test("a run survives another serve starting and stopping (the bug)", async () => {
@@ -138,8 +141,10 @@ test("a run survives another serve starting and stopping (the bug)", async () =>
     const b = spawn(["serve", "--port", String(PORT_B)], LOG_B);
     await waitFor(() => stateJson(PORT_B) !== null, 30_000, "serve B");
     await Bun.sleep(3000); // B's plugin file is installed and loaded by then
-    b.kill(); // graceful: B removes its plugin file on exit
+    b.kill(); // graceful: B leaves its plugin file installed on exit
     await b.exited;
+    // What a later backend's sweep does once B's keep window has passed.
+    removeKeptPluginFile(PORT_B);
     await Bun.sleep(3000);
   });
   expect(r.out).not.toContain("disconnected while the run was active");
@@ -150,8 +155,8 @@ test("a run survives another serve starting and stopping (the bug)", async () =>
 test("a run survives another project's one-shot `run --place` (ephemeral serve + Studio open/close)", async () => {
   const r = await survives(async () => {
     // Nothing listens on PORT_B, so this spawns an ephemeral serve, installs
-    // its plugin file, launches a Studio, runs, closes the Studio, stops the
-    // serve and removes the file: the whole lifecycle another project's
+    // its plugin file, launches a Studio, runs, closes the Studio and stops
+    // the serve (leaving the file): the whole lifecycle another project's
     // one-shot command goes through.
     const one = spawn(["run", "--port", String(PORT_B), "--place", "--source", "return 1"], LOG_B);
     await one.exited;

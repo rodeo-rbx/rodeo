@@ -1,11 +1,13 @@
 //! Start-time sweep of per-backend plugin files.
 //!
 //! Each studio backend installs `rodeo-<build>-<port>.rbxm` into Studio's
-//! plugins directory once it has bound its port, and removes it when it exits
-//! — unless a `--detach` Studio still runs the plugin, and never on a crash.
-//! Every backend runs this sweep right after binding, so the files of
-//! backends that are gone and that nothing still needs get cleaned up by the
-//! next backend to start.
+//! plugins directory once it has bound its port. On a clean exit it leaves the
+//! file installed and records that it did (`mark_kept`): the next serve of the
+//! same build on that port finds the file unchanged and launches Studio at
+//! once, instead of waiting out a freshly written file (see
+//! `launch::settle_plugin_file`). Every backend runs this sweep right after
+//! binding, so the files of backends that are gone and that nothing still
+//! needs get cleaned up by the next backend to start.
 //!
 //! Only files matching that name shape are considered. The legacy `rodeo.rbxm`
 //! that pre-1.5 rodeo versions write is left alone: those versions and their
@@ -13,10 +15,11 @@
 //!
 //! Deleting a plugin file unloads the plugin from every open Studio at once,
 //! so a file goes only when no backend answers on its master port (the plugin
-//! port minus one) *and* no running Studio was launched against that port.
-//! A backend of a different build answering there means the port has changed
-//! hands, and the file is stale regardless of Studios: the new backend's own
-//! plugin takes those Studios over by port.
+//! port minus one), no running Studio was launched against that port, *and*
+//! its backend did not leave it less than [`KEEP_FOR`] ago (a crashed backend
+//! leaves no record, so its file goes at once). A backend of a different build
+//! answering there means the port has changed hands, and the file is stale
+//! regardless: the new backend's own plugin takes those Studios over by port.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,6 +38,40 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// The shared plugin file pre-1.5 versions write. Never read, written, or
 /// removed by this build.
 pub const LEGACY_PLUGIN_FILE: &str = "rodeo.rbxm";
+/// How long a plugin file its backend left on a clean exit stays installed
+/// for the next serve on its port. Until then, Studios opened meanwhile also
+/// load it, and it redials the stopped port.
+pub const KEEP_FOR: Duration = Duration::from_secs(60 * 60);
+
+/// The record that a backend left `plugin_file` installed on a clean exit:
+/// an empty file whose modification time is when. Kept outside the plugins
+/// directory, since any write there makes every open Studio reload plugins.
+fn kept_marker(plugin_file: &Path) -> Option<PathBuf> {
+    let name = plugin_file.file_name()?;
+    Some(dirs::cache_dir()?.join("rodeo").join("kept-plugins").join(name))
+}
+
+/// Record that this backend is exiting and leaves `plugin_file` installed.
+pub fn mark_kept(plugin_file: &Path) -> std::io::Result<()> {
+    let Some(marker) = kept_marker(plugin_file) else { return Ok(()) };
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(marker, b"")
+}
+
+/// Drop the record for `plugin_file`: a backend owns it again, or it is gone.
+pub fn clear_kept(plugin_file: &Path) {
+    if let Some(marker) = kept_marker(plugin_file) {
+        let _ = std::fs::remove_file(marker);
+    }
+}
+
+/// How long ago a backend left `plugin_file` on a clean exit, if it did.
+fn kept_for(plugin_file: &Path) -> Option<Duration> {
+    let marker = kept_marker(plugin_file)?;
+    std::fs::metadata(marker).and_then(|m| m.modified()).ok()?.elapsed().ok()
+}
 
 /// One `rodeo-<build>-<port>.rbxm` found in the plugins directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +80,9 @@ pub struct Entry {
     pub build: String,
     pub port: u16,
     pub age: Duration,
+    /// How long ago its backend left it on a clean exit; `None` if no backend
+    /// did (it crashed, or the file predates the record).
+    pub kept_for: Option<Duration>,
 }
 
 /// What answered a master's health probe.
@@ -60,7 +100,8 @@ fn master_port(plugin_port: u16) -> u16 {
 
 /// Which files to delete. `probes` is keyed by master port; a port missing
 /// from it counts as unanswered. `live_ports` are plugin ports still
-/// referenced by a running Studio's launch bootstrap.
+/// referenced by a running Studio's launch bootstrap. A file its backend left
+/// less than [`KEEP_FOR`] ago stays for the next serve on its port.
 pub fn sweep_decisions(
     entries: &[Entry],
     probes: &HashMap<u16, Probe>,
@@ -71,7 +112,9 @@ pub fn sweep_decisions(
         .filter(|e| e.age >= MIN_AGE)
         .filter(|e| match probes.get(&master_port(e.port)) {
             Some(Probe::Healthy { version }) => version != &e.build,
-            Some(Probe::NoAnswer) | None => !live_ports.contains(&e.port),
+            Some(Probe::NoAnswer) | None => {
+                !live_ports.contains(&e.port) && !e.kept_for.is_some_and(|k| k < KEEP_FOR)
+            }
         })
         .map(|e| e.path.clone())
         .collect()
@@ -123,7 +166,9 @@ fn scan(dir: &Path) -> Vec<Entry> {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .unwrap_or(MIN_AGE);
-            Some(Entry { path: e.path(), build, port, age })
+            let path = e.path();
+            let kept_for = kept_for(&path);
+            Some(Entry { path, build, port, age, kept_for })
         })
         .collect()
 }
@@ -174,7 +219,7 @@ pub async fn sweep() {
 
     for path in sweep_decisions(&entries, &probes, &live) {
         match remove_plugin_file(&path) {
-            Ok(()) => tracing::info!(path = %path.display(), "removed stale plugin file (its backend is gone and no Studio uses it)"),
+            Ok(()) => tracing::info!(path = %path.display(), "removed stale plugin file (its backend is gone and nothing still uses it)"),
             Err(e) => tracing::warn!(path = %path.display(), "failed to remove stale plugin file: {e}"),
         }
     }
@@ -198,7 +243,13 @@ mod tests {
             build: build.to_string(),
             port,
             age: Duration::from_secs(age_secs),
+            kept_for: None,
         }
+    }
+
+    fn kept(mut e: Entry, kept_secs: u64) -> Entry {
+        e.kept_for = Some(Duration::from_secs(kept_secs));
+        e
     }
 
     #[test]
@@ -221,6 +272,26 @@ mod tests {
         assert_eq!(
             deleted,
             vec![PathBuf::from("rodeo-B-46011.rbxm"), PathBuf::from("rodeo-D-46031.rbxm")]
+        );
+    }
+
+    #[test]
+    fn a_file_left_on_exit_stays_for_the_keep_window() {
+        let window = KEEP_FOR.as_secs();
+        let entries = vec![
+            kept(entry("A", 46101, 60), 60),          // left a minute ago → keep
+            kept(entry("B", 46111, 60), window + 60), // left past the window → delete
+            kept(entry("C", 46121, 60), 60),          // left recently, but the port changed hands → delete
+        ];
+        let probes = HashMap::from([
+            (46100, Probe::NoAnswer),
+            (46110, Probe::NoAnswer),
+            (46120, Probe::Healthy { version: "Z".into() }),
+        ]);
+        let deleted = sweep_decisions(&entries, &probes, &HashSet::new());
+        assert_eq!(
+            deleted,
+            vec![PathBuf::from("rodeo-B-46111.rbxm"), PathBuf::from("rodeo-C-46121.rbxm")]
         );
     }
 

@@ -293,9 +293,11 @@ pub(crate) fn install_plugin(port: u16) -> Result<PathBuf> {
 const PLUGIN_SETTLE: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// Block until this backend's plugin file is at least [`PLUGIN_SETTLE`] old.
-/// A no-op except right after a fresh install — the first launch of a new
-/// serve — so it costs at most ~2.5 s once. Runs on the launch's blocking
-/// thread.
+/// A no-op unless the file was just written. A backend leaves its file
+/// installed when it exits (see `plugin_sweep::KEEP_FOR`), so the next serve of
+/// the same build on that port finds it unchanged and doesn't wait: only a new
+/// build or port, or a serve after the keep window, pays ~2.5 s, on its first
+/// launch. Runs on the launch's blocking thread.
 fn settle_plugin_file(port: u16) {
     let Ok(path) = plugin_path(port) else { return };
     let age = std::fs::metadata(&path)
@@ -311,23 +313,17 @@ fn settle_plugin_file(port: u16) {
     }
 }
 
-/// Remove this backend's plugin file. Studio unloads a plugin the moment its
-/// file disappears, so this must not run while a Studio still needs it: the
-/// backend skips it when it launched `--detach` Studios and leaves the file
-/// to a later start-time sweep (`plugin_sweep`).
-pub(crate) fn remove_plugin(port: u16) -> Result<()> {
-    let path = plugin_path(port)?;
-    remove_plugin_file(&path).with_context(|| format!("failed to remove plugin {}", path.display()))
-}
-
 /// Remove a per-backend plugin file together with the IDE-state files Studio
-/// keeps for it. Missing files are not an error.
+/// keeps for it and the record that its backend left it installed. Missing
+/// files are not an error. Studio unloads a plugin the moment its file
+/// disappears, so only the start-time sweep (`plugin_sweep`) calls this.
 pub(crate) fn remove_plugin_file(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    super::plugin_sweep::clear_kept(path);
     if let (Some(dir), Some(name)) = (plugin_ide_state_dir(), path.file_name().and_then(|n| n.to_str())) {
         remove_ide_state_in(&dir, name);
     }
