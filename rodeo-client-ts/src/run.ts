@@ -26,7 +26,7 @@ type CommonRunOpts = {
   file?: string;
   sourcemap?: string;
   /** Run context the code executes as (cf. Roblox Script.RunContext). */
-  context?: "plugin" | "server" | "client" | "elevated" | "cmdbar";
+  context?: "plugin" | "server" | "client" | "mcp" | "cmdbar";
   showReturn?: boolean;
   reloadRequires?: boolean;
   verbose?: boolean;

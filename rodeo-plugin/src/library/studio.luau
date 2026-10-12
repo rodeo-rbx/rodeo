@@ -160,7 +160,7 @@ export type State = {
 	-- process (minted by the edit DOM, inherited by play children via clone).
 	studioId: string,
 	-- StudioMCP's assigned id for this Studio (set via reconciliation). Used
-	-- only for elevated-context routing (set_active_studio); NOT the identity.
+	-- only for mcp-context routing (set_active_studio); NOT the identity.
 	mcpStudioId: string?,
 
 	isServer: boolean,

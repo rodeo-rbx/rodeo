@@ -27,14 +27,14 @@ describe("run errors (API)", () => {
     expect(occurrences(r.output, "rodeo-34-api-module-error"), r.output).toBe(1);
   });
 
-  it("an elevated module error is the engine's report too", async () => {
+  it("an mcp module error is the engine's report too", async () => {
     // StudioMCP runs the module in this Studio's edit DataModel, so the engine
     // reports it there as well: the real error, shown once.
-    const r = await run({ source: "error('rodeo-34-api-elevated-error')", context: "elevated" });
+    const r = await run({ source: "error('rodeo-34-api-mcp-error')", context: "mcp" });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain("rodeo-34-api-elevated-error");
+    expect(r.error).toContain("rodeo-34-api-mcp-error");
     expect(r.error).not.toContain("Requested module experienced an error");
-    expect(occurrences(r.output, "rodeo-34-api-elevated-error"), r.output).toBe(1);
+    expect(occurrences(r.output, "rodeo-34-api-mcp-error"), r.output).toBe(1);
   });
 
   it("the runner's own error is result.error and in the output", async () => {

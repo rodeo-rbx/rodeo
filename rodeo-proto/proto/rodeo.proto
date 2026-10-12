@@ -321,7 +321,7 @@ message SubmitRequest {
   optional string session = 3;
   optional string dom_id = 4;
   optional string dom_kind = 15; // server | client
-  optional string context = 16;  // plugin | server | client | elevated | cmdbar (cf. Script.RunContext)
+  optional string context = 16;  // plugin | server | client | mcp | cmdbar (cf. Script.RunContext)
   // Re-evaluate instance requires instead of reusing the VM's require cache.
   // Absent = cached (Roblox's own semantics): a require resolves to the live
   // module the surrounding game is already using. Set = the plugin clones the
@@ -535,7 +535,7 @@ message ProcessInfo {
   // Resolved route. mode/dom_kind are empty for dom_id-pinned runs (no
   // routing happened); context is always set (plugin default).
   string mode = 3;                   // edit | run | test | play
-  string context = 4;                // plugin | server | client | elevated | cmdbar
+  string context = 4;                // plugin | server | client | mcp | cmdbar
   string dom_kind = 9;               // edit | server | client
   // Where the run executes — set once dispatched, absent while queued.
   optional string studio_id = 5;
@@ -610,7 +610,7 @@ message SetTargetModeMsg {
 message StudioStateMsg {
   string dom_id = 1;
   // The StudioMCP-assigned id for this Studio (propagated via reconciliation).
-  // Used only at the elevated-call boundary (set_active_studio). NOT the
+  // Used only at the StudioMCP-call boundary (set_active_studio). NOT the
   // rodeo session identity — for that, see session_guid below.
   optional string mcp_studio_id = 2;
   bool is_server = 3;
@@ -655,7 +655,7 @@ message WelcomeMsg {
 message RunCommand {
   string execution_id = 1;
   string script = 2;
-  // Run context the code executes as: plugin | server | client | elevated |
+  // Run context the code executes as: plugin | server | client | mcp |
   // cmdbar (empty → plugin). Mode/dom-kind never reach the plugin — the master
   // resolved those when it picked the DOM this command is sent to.
   string context = 3;

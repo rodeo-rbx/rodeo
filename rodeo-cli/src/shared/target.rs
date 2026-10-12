@@ -5,9 +5,10 @@
 //! DataModel the run lands on — the communication boundary: same-DOM contexts
 //! share instances, cross-DOM needs remotes), and the `context` (the *identity
 //! level* the code runs at, each an independent Luau VM on the DOM — cf.
-//! Roblox's `Script.RunContext` Server/Client/Plugin, plus two command-bar
-//! identities: `elevated` (via StudioMCP, any DOM) and `cmdbar` (via the
-//! launch bootstrap's bridge, edit DOM only); NOT a script class).
+//! Roblox's `Script.RunContext` Server/Client/Plugin, plus two privileged
+//! identities: `mcp` (StudioMCP's execute_luau, any DOM) and `cmdbar` (the
+//! command bar via the launch bootstrap's bridge, edit DOM only); NOT a script
+//! class).
 //! `resolve()` applies the defaults table and validates the combination; the
 //! master calls it at submit time, the CLI/MCP call it early for fast errors.
 
@@ -19,7 +20,7 @@ pub enum RunContext {
     Plugin,
     Server,
     Client,
-    Elevated,
+    Mcp,
     Cmdbar,
 }
 
@@ -29,7 +30,7 @@ impl RunContext {
             Self::Plugin => "plugin",
             Self::Server => "server",
             Self::Client => "client",
-            Self::Elevated => "elevated",
+            Self::Mcp => "mcp",
             Self::Cmdbar => "cmdbar",
         }
     }
@@ -39,9 +40,9 @@ impl RunContext {
             "plugin" => Ok(Self::Plugin),
             "server" => Ok(Self::Server),
             "client" => Ok(Self::Client),
-            "elevated" => Ok(Self::Elevated),
+            "mcp" => Ok(Self::Mcp),
             "cmdbar" => Ok(Self::Cmdbar),
-            _ => bail!("unknown context '{s}' — expected plugin, server, client, elevated, or cmdbar"),
+            _ => bail!("unknown context '{s}' — expected plugin, server, client, mcp, or cmdbar"),
         }
     }
 }
@@ -158,7 +159,7 @@ impl RouteSpec {
     /// Defaults:
     /// - `mode` omitted: `edit`.
     /// - `dom_kind` omitted: from `context` (server→server, client→client,
-    ///   cmdbar→edit); for plugin/elevated (or none) by mode: edit→edit,
+    ///   cmdbar→edit); for plugin/mcp (or none) by mode: edit→edit,
     ///   run/test/play→server.
     /// - `context` omitted: the native context of the resolved dom kind
     ///   (edit→plugin, server→server, client→client).
@@ -174,7 +175,7 @@ impl RouteSpec {
             Some(C::Client) => K::Client,
             // cmdbar lives only on the edit DOM (its bridge is installed there)
             Some(C::Cmdbar) => K::Edit,
-            // plugin / elevated / unspecified: the mode's primary DOM
+            // plugin / mcp / unspecified: the mode's primary DOM
             _ => match mode {
                 M::Edit => K::Edit,
                 M::Run | M::Test | M::Play => K::Server,
@@ -205,7 +206,7 @@ impl RouteSpec {
 
         if !context_fits(context, dom_kind) {
             let hint = if context == C::Cmdbar {
-                " — cmdbar's bridge lives only on the edit DOM; use --dom edit, or --context elevated"
+                " — cmdbar's bridge lives only on the edit DOM; use --dom edit, or --context mcp"
             } else {
                 ""
             };
@@ -243,14 +244,14 @@ fn context_fits(context: RunContext, kind: DomKind) -> bool {
     use DomKind as K;
     use RunContext as C;
     match kind {
-        K::Edit => matches!(context, C::Plugin | C::Elevated | C::Cmdbar),
-        K::Server => matches!(context, C::Server | C::Plugin | C::Elevated),
-        K::Client => matches!(context, C::Client | C::Plugin | C::Elevated),
+        K::Edit => matches!(context, C::Plugin | C::Mcp | C::Cmdbar),
+        K::Server => matches!(context, C::Server | C::Plugin | C::Mcp),
+        K::Client => matches!(context, C::Client | C::Plugin | C::Mcp),
     }
 }
 
 /// Whether a pinned run's context can run on the pinned DOM, given the DOM's
-/// actual kind. Plugin and elevated fit every DOM; server and client need their
+/// actual kind. Plugin and mcp fit every DOM; server and client need their
 /// own DOM kind; cmdbar needs the edit DOM.
 pub fn check_pinned_context(context: RunContext, kind: DomKind) -> Result<()> {
     if context_fits(context, kind) {
@@ -271,7 +272,7 @@ impl RunContext {
     /// Whether this context fits only some DOM kinds, so a pinned run at it
     /// must wait for its DOM's kind to be known before dispatching.
     pub fn depends_on_dom_kind(self) -> bool {
-        !matches!(self, Self::Plugin | Self::Elevated)
+        !matches!(self, Self::Plugin | Self::Mcp)
     }
 }
 
@@ -297,16 +298,16 @@ mod tests {
             // bare run = edit plugin
             (spec(None, None, None), (M::Edit, K::Edit, C::Plugin)),
             // mode is never inferred from context: without --mode, mode is edit,
-            // so only edit-hosted contexts (plugin/elevated) resolve here.
+            // so only edit-hosted contexts (plugin/mcp) resolve here.
             // (server/client without --mode are invalid — see invalid_combos.)
-            (spec(None, None, Some(C::Elevated)), (M::Edit, K::Edit, C::Elevated)),
+            (spec(None, None, Some(C::Mcp)), (M::Edit, K::Edit, C::Mcp)),
             (spec(None, None, Some(C::Plugin)), (M::Edit, K::Edit, C::Plugin)),
             (spec(None, Some(K::Edit), None), (M::Edit, K::Edit, C::Plugin)),
             // edit DOM addressable while a session runs (edit exists in every mode)
             (spec(Some(M::Run), Some(K::Edit), None), (M::Run, K::Edit, C::Plugin)),
             (spec(Some(M::Test), Some(K::Edit), None), (M::Test, K::Edit, C::Plugin)),
             (spec(Some(M::Play), Some(K::Edit), None), (M::Play, K::Edit, C::Plugin)),
-            (spec(Some(M::Test), Some(K::Edit), Some(C::Elevated)), (M::Test, K::Edit, C::Elevated)),
+            (spec(Some(M::Test), Some(K::Edit), Some(C::Mcp)), (M::Test, K::Edit, C::Mcp)),
             // cmdbar implies the edit DOM in every mode (its bridge lives there)
             (spec(None, None, Some(C::Cmdbar)), (M::Edit, K::Edit, C::Cmdbar)),
             (spec(Some(M::Test), None, Some(C::Cmdbar)), (M::Test, K::Edit, C::Cmdbar)),
@@ -319,8 +320,8 @@ mod tests {
             // the old three-segment targets
             (spec(Some(M::Run), None, Some(C::Plugin)), (M::Run, K::Server, C::Plugin)),
             (spec(Some(M::Test), Some(K::Client), Some(C::Plugin)), (M::Test, K::Client, C::Plugin)),
-            (spec(Some(M::Test), None, Some(C::Elevated)), (M::Test, K::Server, C::Elevated)),
-            (spec(Some(M::Test), Some(K::Client), Some(C::Elevated)), (M::Test, K::Client, C::Elevated)),
+            (spec(Some(M::Test), None, Some(C::Mcp)), (M::Test, K::Server, C::Mcp)),
+            (spec(Some(M::Test), Some(K::Client), Some(C::Mcp)), (M::Test, K::Client, C::Mcp)),
             // mode + context implying dom kind
             (spec(Some(M::Test), None, Some(C::Client)), (M::Test, K::Client, C::Client)),
             (spec(Some(M::Play), None, Some(C::Client)), (M::Play, K::Client, C::Client)),
@@ -352,7 +353,7 @@ mod tests {
             // context/dom-kind mismatches
             spec(None, Some(K::Server), Some(C::Client)),
             spec(None, Some(K::Client), Some(C::Server)),
-            // edit DOM hosts only plugin/elevated — not server/client contexts
+            // edit DOM hosts only plugin/mcp — not server/client contexts
             spec(Some(M::Test), Some(K::Edit), Some(C::Server)),
             spec(Some(M::Test), Some(K::Edit), Some(C::Client)),
             // cmdbar never runs on a server/client DOM
@@ -393,7 +394,7 @@ mod tests {
     // pinned runs must not go through it.
     #[test]
     fn pinned_specs_allow_any_context_but_no_mode_or_dom() {
-        for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Elevated), Some(C::Cmdbar)] {
+        for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Mcp), Some(C::Cmdbar)] {
             let s = spec(None, None, context);
             s.validate_pinned().unwrap_or_else(|e| panic!("{s:?}: {e}"));
         }
@@ -407,7 +408,7 @@ mod tests {
     fn pinned_context_is_checked_against_the_dom_kind() {
         let fits: &[(C, K)] = &[
             (C::Plugin, K::Edit), (C::Plugin, K::Server), (C::Plugin, K::Client),
-            (C::Elevated, K::Edit), (C::Elevated, K::Server), (C::Elevated, K::Client),
+            (C::Mcp, K::Edit), (C::Mcp, K::Server), (C::Mcp, K::Client),
             (C::Server, K::Server), (C::Client, K::Client), (C::Cmdbar, K::Edit),
         ];
         let misfits: &[(C, K)] = &[
@@ -423,7 +424,7 @@ mod tests {
             assert!(err.to_string().contains(&format!("which is a {} DOM", k.as_str())), "{err}");
         }
         // Only contexts that fit some kinds but not others wait for the kind.
-        assert!(!C::Plugin.depends_on_dom_kind() && !C::Elevated.depends_on_dom_kind());
+        assert!(!C::Plugin.depends_on_dom_kind() && !C::Mcp.depends_on_dom_kind());
         assert!(C::Server.depends_on_dom_kind() && C::Client.depends_on_dom_kind() && C::Cmdbar.depends_on_dom_kind());
     }
 }

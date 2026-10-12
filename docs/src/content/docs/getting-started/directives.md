@@ -7,7 +7,7 @@ A **directive** is a single-line comment at the top of a Luau script that pre-fi
 Directives have **full parity** with the [`rodeo run`](/rodeo/cli/#rodeo-run) subcommand. Any flag you can pass to `rodeo run` on the CLI can go inside a directive.
 
 ```luau
--- @rodeo run --place 12345 --context elevated --save
+-- @rodeo run --place 12345 --context mcp --save
 
 local workspace = game:GetService("Workspace")
 print("running in", workspace.Name)
@@ -19,7 +19,7 @@ Then:
 rodeo run my-script.luau
 ```
 
-That's it. No flags needed at the call site; the script's directive runs it under `--place 12345 --context elevated --save`.
+That's it. No flags needed at the call site; the script's directive runs it under `--place 12345 --context mcp --save`.
 
 ## Syntax
 

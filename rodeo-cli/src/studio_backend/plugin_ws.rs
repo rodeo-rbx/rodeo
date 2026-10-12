@@ -134,7 +134,7 @@ fn error_response(eid: &str, rpc_id: &str, message: String) -> proto::runtime_ty
     }
 }
 
-/// The error an elevated run gets when its Studio never shows up in
+/// The error an mcp run gets when its Studio never shows up in
 /// StudioMCP's Studio list (the reconciliation loop never resolves the DOM's
 /// `mcp_studio_id`). The runner prints it as the run's error, so it names the
 /// Studio, for a user with several open, and what connects one: Studio's
@@ -146,7 +146,7 @@ fn no_studio_mcp_message(dom_state: Option<&proto::StudioStateMsg>) -> String {
         _ => "This Studio".to_string(),
     };
     format!(
-        "{studio} has no StudioMCP connection (waited 10 s), and --context elevated runs \
+        "{studio} has no StudioMCP connection (waited 10 s), and --context mcp runs \
          through StudioMCP. Open the AI Assistant panel in that Studio with MCP Server \
          enabled in its settings, or use --context cmdbar (edit DOM of a Studio rodeo launched)."
     )
@@ -548,7 +548,7 @@ mod tests {
         };
         let msg = no_studio_mcp_message(Some(&state));
         assert!(msg.starts_with("Studio 3f9a2c (Baseplate) has no StudioMCP connection"), "{msg}");
-        assert!(msg.contains("--context elevated"), "{msg}");
+        assert!(msg.contains("--context mcp"), "{msg}");
         assert!(msg.contains("Open the AI Assistant panel in that Studio with MCP Server enabled"), "{msg}");
 
         let unnamed = proto::StudioStateMsg { studio_id: "3f9a2c".into(), ..Default::default() };

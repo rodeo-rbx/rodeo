@@ -545,29 +545,29 @@ export function scriptFile(run: RunFn): void {
 }
 
 // ── targetIdentity (8 tests) ─────────────────────────────────────────────
-// Mirrors executionTests.luau targetIdentity — elevated tests first (require
+// Mirrors executionTests.luau targetIdentity — mcp tests first (require
 // pure edit mode so MCP's execute_luau routes to the edit DataModel).
 
 export function targetIdentity(run: RunFn): void {
-  it("edit:elevated can access DebuggerManager", async () => {
+  it("edit:mcp can access DebuggerManager", async () => {
     const result = await run({
-      context: "elevated",
+      context: "mcp",
       source: "return tostring(DebuggerManager())",
     });
     expect(result.ok).toBe(true);
     expect(String(result.return)).toContain("DebuggerManager");
   });
 
-  it("edit:elevated can use @rodeo/fs", async () => {
+  it("edit:mcp can use @rodeo/fs", async () => {
     const result = await run({
-      context: "elevated",
+      context: "mcp",
       source: 'return require("@rodeo/fs").exists(".")',
     });
     expect(result.ok).toBe(true);
     expect(result.return).toBe(true);
   });
 
-  it("edit:elevated can use @rodeo/process", async () => {
+  it("edit:mcp can use @rodeo/process", async () => {
     // `echo` is a real program on Unix but a cmd.exe builtin on Windows (there
     // is no echo.exe), so route it through `cmd /c` there. @rodeo/process.run
     // execs on the host, so the host platform is what matters.
@@ -576,15 +576,15 @@ export function targetIdentity(run: RunFn): void {
         ? '{"cmd", "/c", "echo", "hi"}'
         : '{"echo", "hi"}';
     const result = await run({
-      context: "elevated",
+      context: "mcp",
       source: `local r = require("@rodeo/process").run(${argv}) return r.ok`,
     });
     expect(result.ok).toBe(true);
     expect(result.return).toBe(true);
   });
 
-  it("edit:elevated propagates errors", async () => {
-    const result = await run({ context: "elevated", source: 'error("boom")' });
+  it("edit:mcp propagates errors", async () => {
+    const result = await run({ context: "mcp", source: 'error("boom")' });
     expect(result.ok).toBe(false);
   });
 

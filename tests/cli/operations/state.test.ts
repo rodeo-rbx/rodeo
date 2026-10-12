@@ -107,14 +107,14 @@ describe("state (CLI)", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("--context elevated composes with --dom-id", () => {
+  it("--context mcp composes with --dom-id", () => {
     const json = runRodeo(["state", "--json", "--port", String(PORT)]);
     const domId: string = JSON.parse(json.stdout).studios[0].editDomId;
     const result = runRodeo([
-      "run", "--port", String(PORT), "--dom-id", domId, "--context", "elevated",
+      "run", "--port", String(PORT), "--dom-id", domId, "--context", "mcp",
       "--show-return", "--source", "return tostring(DebuggerManager())",
     ]);
-    // Elevated needs StudioMCP; assert it at least didn't reject at parse time.
+    // mcp needs StudioMCP; assert it at least didn't reject at parse time.
     expect(result.stdout + result.stderr).not.toContain("mode/dom don't apply");
   });
 
@@ -141,7 +141,7 @@ describe("state (CLI)", () => {
 
 // Issue #14: --dom-id could never pin a server or client DOM — the route
 // check ran before the pin rule and rejected (edit mode, client DOM) — so the
-// only pins that worked were plugin/elevated runs on the edit DOM.
+// only pins that worked were plugin/mcp runs on the edit DOM.
 describe("--dom-id pins play DOMs (CLI)", () => {
   const PORT = 47510;
   // Studios this suite launches are reaped by session, never by pattern.

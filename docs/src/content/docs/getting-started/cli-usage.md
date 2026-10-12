@@ -95,7 +95,7 @@ When you're done, quit the Studio yourself; because it's detached, rodeo won't c
 | `RODEO_NO_TIMESTAMPS` | Any value: log lines on stderr have no timestamps. |
 | `NO_COLOR` / `FORCE_COLOR` | Non-empty: colored log output off / on, whatever the terminal. |
 | `RODEO_LOG_DIR` | Where the serve writes its log files. Default `.rodeo/.temp/logs`. |
-| `RODEO_STUDIOMCP_VERBOSE` | Any value: StudioMCP (used by `--context elevated`) logs verbosely, alongside the serve's logs. |
+| `RODEO_STUDIOMCP_VERBOSE` | Any value: StudioMCP (used by `--context mcp`) logs verbosely, alongside the serve's logs. |
 
 The serve reads `RODEO_LAUNCH_TIMEOUT`, `RODEO_PROFILE_*`, `ROBLOX_STUDIO_PATH`, `RODEO_LOG_DIR` and `RODEO_STUDIOMCP_VERBOSE` when it starts. When `rodeo run` starts its own serve, set them for that command. That serve prints only its errors to the run's terminal unless `--verbose`, `RODEO_VERBOSE` or `RUST_LOG` is set; its full log is in `RODEO_LOG_DIR`.
 

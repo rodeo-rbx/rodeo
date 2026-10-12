@@ -40,7 +40,7 @@ export type ExecutionCallbacks = {
 	onRpc: (msg: any) -> (),
 }
 
-type RunContext = "server" | "client" | "plugin" | "elevated" | "cmdbar"
+type RunContext = "server" | "client" | "plugin" | "mcp" | "cmdbar"
 
 -- Execute a module in a specific context (server/client/plugin)
 -- ctx contains the runner, module, events, and cleanup function (created by utils.createExecutionContext)
@@ -175,7 +175,7 @@ local function executeInContext(ctx: utils.ExecutionContext, context: RunContext
 			-- Parent thin shim LocalScript to PlayerScripts to trigger auto-execution
 			ctx.shim.Parent = Players.LocalPlayer.PlayerScripts
 		end)
-	else -- plugin / elevated / cmdbar (runner handles the elevated MCP hop and the cmdbar bridge)
+	else -- plugin / mcp / cmdbar (runner handles the StudioMCP hop and the cmdbar bridge)
 		task.spawn(function()
 			require(ctx.runner)
 		end)

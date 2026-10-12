@@ -69,9 +69,9 @@ Run a script in Studio
 
   Possible values: `edit`, `server`, `client`
 
-* `--context <CONTEXT>` — Identity level the code executes at: plugin, server (server-runtime identity), client (client-runtime identity), elevated (command bar via StudioMCP), or cmdbar (command bar via the launch bootstrap's bridge — edit DOM of a rodeo-launched Studio, no StudioMCP needed)
+* `--context <CONTEXT>` — Identity level the code executes at: plugin, server (server-runtime identity), client (client-runtime identity), mcp (Studio MCP's execute_luau identity — any DOM, needs Studio's MCP server), or cmdbar (command bar via the launch bootstrap's bridge — edit DOM of a rodeo-launched Studio, no MCP server needed)
 
-  Possible values: `plugin`, `server`, `client`, `elevated`, `cmdbar`
+  Possible values: `plugin`, `server`, `client`, `mcp`, `cmdbar`
 
 * `--studio-id <STUDIO_ID>` — Scope routing to one studio by id (from `rodeo state`; unique prefix ok)
 * `--no-warn` — Disable warning output

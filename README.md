@@ -62,13 +62,13 @@ hello, frank
 ### Run code on any DOM, at any identity, in any Studio mode
 - `--mode edit|run|test|play`
 - `--dom edit|server|client`
-- `--context plugin|server|client|elevated|cmdbar`
+- `--context plugin|server|client|mcp|cmdbar`
 
 | Flags | Runs (mode, DOM, identity) |
 |-------|----------------------------|
 | *(none)* | edit DOM, plugin identity (default) |
 | `--mode edit` | edit DOM, plugin identity, after ending a running run/test/play session |
-| `--context elevated` | edit DOM, command-bar identity (via StudioMCP) |
+| `--context mcp` | edit DOM, StudioMCP identity (needs Studio's MCP server) |
 | `--context cmdbar` | edit DOM, command-bar identity (via the launch bootstrap; rodeo-launched Studios only, no StudioMCP) |
 | `--mode run --context server` | run mode, server DOM, server identity |
 | `--mode test --context server` | play test, server DOM, server identity |
@@ -80,7 +80,7 @@ hello, frank
 A server/client run needs `--mode` — `--context server` alone resolves to edit mode (which has no server DOM) and errors, rather than silently transitioning the studio.
 
 `--context` composes with `--dom-id <id>` to run at a chosen context on one
-exact DOM (e.g. `--dom-id <id> --context elevated`). `--dom-id` / `--studio-id`
+exact DOM (e.g. `--dom-id <id> --context mcp`). `--dom-id` / `--studio-id`
 accept a unique id prefix (from `rodeo state`).
 
 ```bash

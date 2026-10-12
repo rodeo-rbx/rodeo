@@ -31,7 +31,7 @@ pub struct StudioInstanceInfo {
     pub error: Option<String>,
     /// StudioMCP's id for this Studio process, resolved asynchronously by
     /// polling `list_roblox_studios` after spawn. Used only at the
-    /// elevated-call boundary (the `studio_id` of StudioMCP tool calls) — not
+    /// StudioMCP-call boundary (the `studio_id` of StudioMCP tool calls) — not
     /// for routing.
     pub mcp_studio_id: Option<String>,
 }
@@ -481,7 +481,7 @@ impl MasterState {
             let Some(dom) = self.dom_snapshot(wanted_dom) else {
                 return Ok(None);
             };
-            // Plugin/elevated fit every DOM. Any other context must fit the
+            // Plugin/mcp fit every DOM. Any other context must fit the
             // pinned DOM's kind — checked here rather than at submit, because
             // the kind is the DOM's, not the caller's (issue #14). A DOM's kind
             // never changes, so a misfit is final; a kind not reported yet
@@ -1565,7 +1565,7 @@ mod tests {
     #[test]
     fn pinned_run_dispatches_to_a_play_dom_at_its_context() {
         use crate::shared::target::RunContext as C;
-        for (kind, context) in [("client", C::Client), ("server", C::Server), ("client", C::Plugin), ("server", C::Elevated)] {
+        for (kind, context) in [("client", C::Client), ("server", C::Server), ("client", C::Plugin), ("server", C::Mcp)] {
             let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
             state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", Some(kind))));
             let (run, _client_rx) = pinned_run("play-dom", Some(context));

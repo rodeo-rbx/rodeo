@@ -41,7 +41,7 @@ local function makeIgnoreSuffixPattern(executionId: string): string
 	return string.gsub(string.gsub(suffix, "%.", "%%."), "%-", "%%-") .. "$"
 end
 
-export type RunContext = "server" | "client" | "plugin" | "elevated" | "cmdbar"
+export type RunContext = "server" | "client" | "plugin" | "mcp" | "cmdbar"
 
 -- i cloned because for some reason runner loses children and .rpc errors, this is an attempt to fully preserve
 -- runner template for what seems to be an edge case from plugin hot reloading

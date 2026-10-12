@@ -117,7 +117,9 @@ local moduleReports = game:GetService("ScriptContext").Error:Connect(function(me
 end)
 
 local success, result = xpcall(function()
-	if context == "elevated" then
+	if context == "mcp" then
+		local MCP_ERROR = "__RODEO_MCP_ERROR__"
+		local MCP_JSON = "__RODEO_MCP_JSON__"
 		local TestService = game:GetService("TestService")
 		local RunService = game:GetService("RunService")
 		-- StudioMCP's execute_luau requires the datamodel_type its command bar
@@ -133,7 +135,7 @@ local success, result = xpcall(function()
 		-- Wrapper xpcall's the require so StudioMCP's outer script frame ("AssistantCommand")
 		-- never becomes part of the trace. On failure, return the trace as data with a sentinel
 		-- prefix; the runner re-raises it below with level=0 so only inner frames surface.
-		-- On success, JSON-encode the result inside the elevated wrapper so callers
+		-- On success, JSON-encode the result inside the wrapper so callers
 		-- receive the original typed value (boolean, number, table, etc.) instead of
 		-- StudioMCP's lossy string stringification. The runner decodes it back on
 		-- receipt before normalize+wire-encode.
@@ -145,9 +147,9 @@ local success, result = xpcall(function()
 			end, function(err)
 				return tostring(err) .. "\n" .. debug.traceback(nil, 2)
 			end)
-			if not ok then return "__RODEO_ELEVATED_ERROR__" .. tostring(result) end
+			if not ok then return "]] .. MCP_ERROR .. [[" .. tostring(result) end
 			local jsonOk, jsonResult = pcall(HttpService.JSONEncode, HttpService, result)
-			if jsonOk then return "__RODEO_ELEVATED_JSON__" .. jsonResult end
+			if jsonOk then return "]] .. MCP_JSON .. [[" .. jsonResult end
 			return tostring(result) -- non-JSON-encodable (Instance, Vector3, etc.) → string fallback
 		]]
 		local called, r: runtime.McpCallResponse = pcall(
@@ -168,11 +170,11 @@ local success, result = xpcall(function()
 			error(string.match(message, "RPC error %[mcp_call%]: (.*)") or message, 0)
 		end
 		if typeof(r.result) == "string" then
-			if string.sub(r.result, 1, 24) == "__RODEO_ELEVATED_ERROR__" then
-				error(string.sub(r.result, 25), 0)
+			if string.sub(r.result, 1, #MCP_ERROR) == MCP_ERROR then
+				error(string.sub(r.result, #MCP_ERROR + 1), 0)
 			end
-			if string.sub(r.result, 1, 23) == "__RODEO_ELEVATED_JSON__" then
-				return HttpService:JSONDecode(string.sub(r.result, 24))
+			if string.sub(r.result, 1, #MCP_JSON) == MCP_JSON then
+				return HttpService:JSONDecode(string.sub(r.result, #MCP_JSON + 1))
 			end
 		end
 		return r.result
@@ -190,7 +192,7 @@ local success, result = xpcall(function()
 			error(
 				"cmdbar context needs a rodeo-launched Studio: the launch bootstrap installs the "
 					.. "command-bar bridge, and this Studio has none (opened by hand, or launched by an "
-					.. "older rodeo). Use --context elevated instead.",
+					.. "older rodeo). Use --context mcp instead.",
 				0
 			)
 		end

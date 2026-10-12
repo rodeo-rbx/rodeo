@@ -1,12 +1,12 @@
 // Repro (issue #34): errors the runner raises itself, rather than the user's
 // module, reached only ExecutionDone.error, which no client prints. So
 // `--context cmdbar` on a Studio without the launch bootstrap's bridge (one
-// opened by hand), or `--context elevated` on a Studio StudioMCP doesn't
+// opened by hand), or `--context mcp` on a Studio StudioMCP doesn't
 // know, exited 1 with no output at all.
 //
 // Expected: the reason reaches stderr exactly once. A module's own error is
 // logged by the engine and already streams through the run's output, so it
-// must not be repeated — in every context, elevated (StudioMCP) included.
+// must not be repeated — in every context, mcp (StudioMCP) included.
 import { describe, beforeAll, afterAll, it, expect } from "bun:test";
 import { cliStudioHandle, killLaunchedStudios, runRodeo } from "../cli/helpers.js";
 
@@ -46,11 +46,11 @@ describe("runner errors reach the terminal once (issue #34)", () => {
     expect(occurrences(output, "rodeo-34-cmdbar-error"), output).toBe(1);
   });
 
-  it("a module error under elevated is printed once", () => {
-    const r = run(["--context", "elevated", "--source", "error('rodeo-34-elevated-error')"]);
+  it("a module error under mcp is printed once", () => {
+    const r = run(["--context", "mcp", "--source", "error('rodeo-34-mcp-error')"]);
     const output = r.stdout + r.stderr;
     expect(r.exitCode, output).toBe(1);
-    expect(occurrences(output, "rodeo-34-elevated-error"), output).toBe(1);
+    expect(occurrences(output, "rodeo-34-mcp-error"), output).toBe(1);
   });
 
   it("cmdbar on a Studio without the bridge says why", () => {

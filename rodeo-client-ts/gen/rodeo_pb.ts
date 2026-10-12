@@ -1039,7 +1039,7 @@ export type SubmitRequest = Message<"rodeo.SubmitRequest"> & {
   domKind?: string | undefined;
 
   /**
-   * plugin | server | client | elevated | cmdbar (cf. Script.RunContext)
+   * plugin | server | client | mcp | cmdbar (cf. Script.RunContext)
    *
    * @generated from field: optional string context = 16;
    */
@@ -1872,7 +1872,7 @@ export type ProcessInfo = Message<"rodeo.ProcessInfo"> & {
   mode: string;
 
   /**
-   * plugin | server | client | elevated | cmdbar
+   * plugin | server | client | mcp | cmdbar
    *
    * @generated from field: string context = 4;
    */
@@ -2146,7 +2146,7 @@ export type StudioStateMsg = Message<"rodeo.StudioStateMsg"> & {
 
   /**
    * The StudioMCP-assigned id for this Studio (propagated via reconciliation).
-   * Used only at the elevated-call boundary (set_active_studio). NOT the
+   * Used only at the StudioMCP-call boundary (set_active_studio). NOT the
    * rodeo session identity — for that, see session_guid below.
    *
    * @generated from field: optional string mcp_studio_id = 2;
@@ -2307,7 +2307,7 @@ export type RunCommand = Message<"rodeo.RunCommand"> & {
   script: string;
 
   /**
-   * Run context the code executes as: plugin | server | client | elevated |
+   * Run context the code executes as: plugin | server | client | mcp |
    * cmdbar (empty → plugin). Mode/dom-kind never reach the plugin — the master
    * resolved those when it picked the DOM this command is sent to.
    *

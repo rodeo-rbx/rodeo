@@ -6,7 +6,7 @@ description: Programmatically add breakpoints and inspect thread information to 
 ## Driving this externally (rodeo / Studio MCP) — VERIFIED
 
 The base skill below assumes the in-Studio Assistant's privileged context. From outside (rodeo
-`:elevated` or MCP `execute_luau` — the same channel), it works, but follow this recipe and heed
+`--context mcp` or MCP `execute_luau` — the same channel), it works, but follow this recipe and heed
 the pitfalls; both were learned the hard way.
 
 ### Deadlock-free recipe
@@ -51,7 +51,7 @@ Everything below is the engine API.
 > Assistant** (already elevated, with a privileged debugger channel). Where it assumes that context,
 > the **"Driving this externally" recipe at the top wins** for rodeo/MCP use — verified overrides:
 > - **Identity:** "plugin-level security, usable by plugins" holds for the Assistant, but via
->   rodeo/MCP in a *play* DM plugin identity gets `nil` — use **elevated**.
+>   rodeo/MCP in a *play* DM plugin identity gets `nil` — use rodeo's **`--context mcp`**.
 > - **Late-set `OnStopped`:** does **not** work externally (you can't run code in a parked DM) —
 >   **arm before the hit**.
 > - **`ClearBreakpoints()`:** don't — it wipes the user's breakpoints; track and `RemoveBreakpoint`
