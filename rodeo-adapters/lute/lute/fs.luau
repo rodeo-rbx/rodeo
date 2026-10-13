@@ -19,6 +19,9 @@ end
 
 -- Handles opened with a "+" mode, by mode: rodeo opened them as writers.
 local writeOnly = setmetatable({}, { __mode = "k" })
+-- What readIntoBuffer read from a handle: lute's leaves the cursor where it
+-- was, so the next read still returns it.
+local unread = setmetatable({}, { __mode = "k" })
 
 local function checkReadable(handle, fn: string)
 	local mode = writeOnly[handle]
@@ -50,6 +53,11 @@ end
 
 function fs.read(handle): string
 	checkReadable(handle, "read")
+	local content = unread[handle]
+	if content then
+		unread[handle] = nil
+		return buffer.tostring(content)
+	end
 	return buffer.tostring(g.stream.readBytes(handle))
 end
 
@@ -62,12 +70,13 @@ function fs.close(handle)
 	g.stream.close(handle)
 end
 
--- No host-side seek: reads the remaining stream once, then copies the
--- requested window. fileOffset is absolute from the start of the file, so
--- this is only valid as the handle's first read.
+-- No host-side seek: reads the remaining stream once and keeps it, then
+-- copies the requested window. fileOffset is absolute from the start of the
+-- file, so this is only valid before the handle's first fs.read.
 function fs.readIntoBuffer(handle, buf: buffer, fileOffset: number, numBytes: number, bufferOffset: number?): number
 	checkReadable(handle, "readIntoBuffer")
-	local content = g.stream.readBytes(handle)
+	local content = unread[handle] or g.stream.readBytes(handle)
+	unread[handle] = content
 	local available = buffer.len(content) - fileOffset
 	local n = math.max(0, math.min(numBytes, available))
 	if n > 0 then
@@ -82,13 +91,14 @@ end
 
 function fs.stat(path: string)
 	local stat = g.fs.stat(path)
-	local function dur(millis: number?)
-		return time.duration.milliseconds(millis or 0)
+	-- The host's int64 fields (size, millisecond timestamps) arrive as strings.
+	local function dur(millis: (number | string)?)
+		return time.duration.milliseconds(tonumber(millis) or 0)
 	end
 	return {
 		type = stat.type,
 		permissions = { readonly = false },
-		size = stat.size or 0,
+		size = tonumber(stat.size) or 0,
 		created = dur(stat.createdMillis),
 		accessed = dur(stat.accessedMillis),
 		modified = dur(stat.modifiedMillis),
@@ -100,7 +110,17 @@ function fs.type(path: string): string
 	return if ok then result else "unknown"
 end
 
+local function parentOf(path: string): string?
+	return string.match(path, "^(.*[^/\\])[/\\]+[^/\\]+[/\\]*$")
+end
+
+-- lute's mkdir makes one directory: its parent must exist (@std/fs's
+-- createDirectory makes the parents itself when asked).
 function fs.mkdir(path: string)
+	local parent = parentOf(path)
+	if parent and not isDirPath(parent) then
+		error(`fs.mkdir: no such file or directory: '{parent}'`, 2)
+	end
 	g.fs.mkdir(path)
 end
 
@@ -161,8 +181,12 @@ function fs.listdir(path: string)
 	return entries
 end
 
+-- lute's rmdir removes an empty directory only.
 function fs.rmdir(path: string)
-	removeTree(path)
+	if #g.fs.listdir(path) > 0 then
+		error(`fs.rmdir: directory not empty: '{path}'`, 2)
+	end
+	g.fs.rmdir(path)
 end
 
 return fs

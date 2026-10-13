@@ -326,6 +326,16 @@ mod tests {
     }
 
     #[test]
+    fn a_lute_module_with_no_rodeo_implementation_still_bundles() {
+        // It errors when required in Studio; bundling must not fail first.
+        let scratch = Scratch::new(&[("main.luau", "return require('@lute/net/client')")]);
+
+        let bundled = scratch.bundle_with("main.luau", &["lute"]).unwrap();
+
+        assert!(bundled.contains("is not supported by rodeo's Lute adapter"), "{bundled}");
+    }
+
+    #[test]
     fn an_unknown_adapter_fails_the_bundle() {
         let scratch = Scratch::new(&[("main.luau", "return 1")]);
 

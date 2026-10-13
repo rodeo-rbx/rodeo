@@ -41,6 +41,39 @@ local function mapResult(result, stdio: string)
 	}
 end
 
+-- lute checks run/system arguments in C++; these raise its messages.
+local function checkOptions(options, fn: string, stringKeys: { string })
+	if options == nil then
+		return
+	end
+	if type(options) ~= "table" then
+		error("process options must be a table", 3)
+	end
+	for _, key in stringKeys do
+		local value = options[key]
+		if value ~= nil and type(value) ~= "string" then
+			error(`invalid argument #-1 to '{fn}' (string expected, got {type(value)})`, 3)
+		end
+	end
+	if options.env ~= nil and type(options.env) ~= "table" then
+		error("process option 'env' must be a table", 3)
+	end
+end
+
+-- The array part of `args`; lute ignores other keys.
+local function argList(args): { string }
+	local list = {}
+	if type(args) == "table" then
+		for _, arg in ipairs(args) do
+			table.insert(list, arg)
+		end
+	end
+	if #list == 0 then
+		error("process.run requires a non-empty table of arguments", 3)
+	end
+	return list
+end
+
 local process = {}
 
 process.args = g.process.args
@@ -55,12 +88,18 @@ function process.cwd(): string
 end
 
 function process.run(args: { string }, options)
+	local list = argList(args)
+	checkOptions(options, "run", { "cwd", "stdio" })
 	local stdio = stdioKind(options)
-	return mapResult(g.process.run(args, options and { cwd = options.cwd, env = options.env }), stdio)
+	return mapResult(g.process.run(list, options and { cwd = options.cwd, env = options.env }), stdio)
 end
 
 -- Lute's default shell is $SHELL (%COMSPEC% on Windows), else /bin/sh (cmd.exe).
 function process.system(command: string, options)
+	if type(command) ~= "string" then
+		error(`invalid argument #1 to 'system' (string expected, got {type(command)})`, 2)
+	end
+	checkOptions(options, "system", { "system", "cwd", "stdio" })
 	local stdio = stdioKind(options)
 	local shell = options and options.system
 		or g.process.env[if isWindows then "COMSPEC" else "SHELL"]

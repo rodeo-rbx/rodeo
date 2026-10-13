@@ -1,0 +1,893 @@
+local testtypes = require("@std/test/types")
+local printer = require("@std/syntax/printer")
+local query = require("@std/syntax/query")
+local syntax = require("@std/syntax")
+local syntaxTypes = require("@std/syntax/types")
+local syntaxUtils = require("@std/syntax/utils")
+local test = require("@std/test")
+
+local function checkReplacement(
+	source: string,
+	expected: string,
+	transformFn: (syntaxTypes.CstNode) -> syntaxTypes.Replacements?,
+	assert: testtypes.Asserts
+)
+	local cst = syntax.parse(source)
+	local replacements = transformFn(cst.root)
+
+	local result = printer.printFile(cst, replacements)
+
+	assert.eq(result, expected)
+end
+
+test.suite("SyntaxPrinter", function(suite)
+	suite:case("stringReplacement", function(assert)
+		local source = [[
+            local name = "World"
+]]
+
+		local expected = "            local name = 1 + 2\n"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst :: any, syntaxUtils.isExprConstantString):replace(function(s)
+				return if s.value.text == "World" then "1 + 2" else nil
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprReplacement", function(assert)
+		local source = [[
+            local name = "World"
+]]
+
+		local expected = "            local name = 1 + 2\n"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst :: any, syntaxUtils.isExprConstantString):replace(function(s)
+				return if s.value.text == "World" then "1 + 2" else nil
+			end)
+		end, assert)
+	end)
+
+	suite:case("statReplacement", function(assert)
+		local source = [[
+            local name = "World"
+]]
+
+		local expected = "            local name = 1 + 2\n"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatLocal):replace(function(_)
+				return "local name = 1 + 2"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeReplacement", function(assert)
+		local source = [[local name: number = "World"]]
+		local expected = [[local name: string = "World"]]
+
+		local stat = syntax.parseBlock("local x: string")
+		local ann = (stat.statements[1] :: syntaxTypes.CstStatLocal).variables[1].annotation
+
+		checkReplacement(source, expected, function(cst)
+			return query
+				.findAllFromRoot(cst, syntaxUtils.isStatLocal)
+				:map(function(assign)
+					return assign.variables[1].annotation
+				end)
+				:replace(function(_)
+					return printer.printNode(ann :: any) -- LUAUFIX: Remove any cast once code too complex no longer emitted
+				end)
+		end, assert)
+	end)
+
+	suite:case("typePackReplacement", function(assert)
+		local source = [[type t = (...number) -> ()]]
+		local expected = [[type t = (...number) -> string, ...string)]]
+
+		local stat = syntax.parseBlock("type t = () -> (string, ...string)")
+		local tp = ((stat.statements[1] :: syntaxTypes.CstStatTypeAlias).type :: syntaxTypes.CstTypeFunction).returnTypes
+
+		checkReplacement(source, expected, function(cst)
+			return query
+				.findAllFromRoot(cst, syntaxUtils.isStatTypeAlias)
+				:map(function(ta)
+					return if ta.type.tag == "function" then ta.type.returnTypes else nil
+				end)
+				:replace(function(_)
+					return printer.printNode(tp)
+				end)
+		end, assert)
+	end)
+
+	suite:case("exprTableItemReplacement", function(assert)
+		local source = "local tbl = { a = 1, }"
+		local expected = "local tbl = { b = 2, }"
+
+		checkReplacement(source, expected, function(cst)
+			return query
+				.findAllFromRoot(cst, syntaxUtils.isExprTable)
+				:map(function(node)
+					return node.entries[1]
+				end)
+				:replace(function(_)
+					return "b = 2,"
+				end)
+		end, assert)
+	end)
+
+	suite:case("exprGroupTrivia", function(assert)
+		local source = [[local x =
+(1 + 2) -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprGroup):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprNilTrivia", function(assert)
+		local source = [[local x =
+nil -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprConstantNil):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprBoolTrivia", function(assert)
+		local source = [[local x =
+true -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprConstantBool):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprNumberTrivia", function(assert)
+		local source = [[local x =
+235 -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprConstantNumber):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprLocalTrivia", function(assert)
+		local source = [[local y = 3
+		local x =
+y -- after]]
+		local expected = "local y = 3\n\t\tlocal x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprLocal):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprGlobalTrivia", function(assert)
+		local source = [[local x =
+y -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprGlobal):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprVarargsTrivia", function(assert)
+		local source = [[local x =
+... -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprVarargs):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprCallTrivia", function(assert)
+		local source = [[local x =
+print() -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprCall):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprIndexNameTrivia", function(assert)
+		local source = [[local x =
+hello.world -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprIndexName):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprIndexExprTrivia", function(assert)
+		local source = [[local x =
+hello['world'] -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprIndexExpr):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprFunctionTrivia", function(assert)
+		local source = [[local x =
+function() return end -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprFunction):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprTableTrivia", function(assert)
+		local source = [[local x =
+{} -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprTable):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprUnaryTrivia", function(assert)
+		local source = [[local x =
+#t -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprUnary):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprBinaryTrivia", function(assert)
+		local source = [[local x =
+3 + 2 -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprBinary):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprInterpStringTrivia", function(assert)
+		local source = [[local x =
+`hello {"world"}` -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprInterpString):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprTypeAssertionTrivia", function(assert)
+		local source = [[local x =
+y :: number -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprTypeAssertion):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprIfElseTrivia", function(assert)
+		local source = [[local x =
+if true then 'hello' else 'world' -- after]]
+		local expected = "local x =\nreplaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExprIfElse):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("exprTrivia", function(assert)
+		local source = [[local x, y =
+if true then 'hello' else 'world', z :: string -- after]]
+		local expected = "local x, y =\nreplaced, replaced -- after"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isExpr):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statBlockTrivia", function(assert)
+		local source = [[-- hello
+local y = 1
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatBlock):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statIfTrivia", function(assert)
+		local source = [[-- hello
+if true then
+	return 1
+else
+	return 2
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatIf):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statWhileTrivia", function(assert)
+		local source = [[-- hello
+while true do
+	print("hello")
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatWhile):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statRepeatTrivia", function(assert)
+		local source = [[-- hello
+repeat
+	print("hello")
+until true
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatRepeat):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statBreakTrivia", function(assert)
+		local source = [[-- hello
+while true do
+	break
+end
+-- world]]
+		local expected = "-- hello\nwhile true do\n\treplaced\nend\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatBreak):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statContinueTrivia", function(assert)
+		local source = [[-- hello
+while true do
+	continue
+end
+-- world]]
+		local expected = "-- hello\nwhile true do\n\treplaced\nend\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatContinue):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statReturnTrivia", function(assert)
+		local source = [[-- hello
+function foo() return 1, 2 end
+-- world]]
+		local expected = "-- hello\nfunction foo() replaced end\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatReturn):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statExprTrivia", function(assert)
+		local source = [[-- hello
+foobar()
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatExpr):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statLocalTrivia", function(assert)
+		local source = [[-- hello
+local x = 1
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatLocal):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("constDeclarationRoundTrip", function(assert)
+		local source = "const a = 'hello'"
+		local cst = syntax.parse(source)
+		local result = printer.printFile(cst)
+		assert.eq(result, source)
+	end)
+
+	suite:case("statForTrivia", function(assert)
+		local source = [[-- hello
+for i = 1, 10 do
+	print(i)
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatFor):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statForInTrivia", function(assert)
+		local source = [[-- hello
+for i in {1, 2, 3} do
+	print(i)
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatForIn):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statAssignTrivia", function(assert)
+		local source = [[-- hello
+local y = 2
+y = 1
+-- world]]
+		local expected = "-- hello\nlocal y = 2\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatAssign):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statCompoundAssignTrivia", function(assert)
+		local source = [[-- hello
+local y = 2
+y -= 1
+-- world]]
+		local expected = "-- hello\nlocal y = 2\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatCompoundAssign):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statFunctionTrivia", function(assert)
+		local source = [[-- hello
+function foo()
+	return 1
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatFunction):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statLocalFunctionTrivia", function(assert)
+		local source = [[-- hello
+local function foo()
+	return 1
+end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatLocalFunction):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statTypeAliasTrivia", function(assert)
+		local source = [[-- hello
+type foo = number
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatTypeAlias):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statTypeFunctionTrivia", function(assert)
+		local source = [[-- hello
+type function foo() return number end
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStatTypeFunction):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("statTrivia", function(assert)
+		local source = [[-- hello
+local x = 1
+local y = 2
+-- world]]
+		local expected = "-- hello\nreplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isStat):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeReferenceTrivia", function(assert)
+		local source = [[-- hello
+type foo = number
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeReference):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeSingletonBoolTrivia", function(assert)
+		local source = [[-- hello
+type foo = true
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeSingletonBool):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeSingletonStringTrivia", function(assert)
+		local source = [[-- hello
+local x : "hello"
+-- world]]
+		local expected = "-- hello\nlocal x : replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeSingletonString):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeTypeOfTrivia", function(assert)
+		local source = [[-- hello
+type foo = typeof(123)
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeTypeof):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeGroupTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number)
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeGroup):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeOptionalTrivia", function(assert)
+		local source = [[-- hello
+type foo = true?
+-- world]]
+		local expected = "-- hello\ntype foo = truereplaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeOptional):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeUnionTrivia", function(assert)
+		local source = [[-- hello
+type foo = true? | false
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeUnion):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeIntersectionTrivia", function(assert)
+		local source = [[-- hello
+type foo = true & false
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeIntersection):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeArrayTrivia", function(assert)
+		local source = [[-- hello
+type foo = { number }
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeArray):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeTableTrivia", function(assert)
+		local source = [[-- hello
+type foo = {}
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeTable):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeFunctionTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number) -> ()
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypeFunction):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typeTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number) -> ()
+-- world]]
+		local expected = "-- hello\ntype foo = replaced\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isType):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typePackExplicitTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number) -> (number, ...string)
+-- world]]
+		local expected = "-- hello\ntype foo = (number) -> (replaced)\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypePackExplicit):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typePackGenericTrivia", function(assert)
+		local source = [[-- hello
+type foo = <G...>(number) -> (number, G...)
+-- world]]
+		local expected = "-- hello\ntype foo = <G...>(number) -> (number, replaced)\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypePackGeneric):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typePackVariadicTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number) -> (...number)
+-- world]]
+		local expected = "-- hello\ntype foo = (number) -> (replaced)\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypePackVariadic):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("typePackTrivia", function(assert)
+		local source = [[-- hello
+type foo = (number) -> (number, ...string)
+-- world]]
+		local expected = "-- hello\ntype foo = (number) -> (replaced)\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isTypePack):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("localTrivia", function(assert)
+		local source = [[-- hello
+local x, y = 1, 2
+-- world]]
+		local expected = "-- hello\nlocal replaced, replaced = 1, 2\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isLocal):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("attributeTrivia", function(assert)
+		local source = [[-- hello
+@checked
+function foo() return end
+-- world]]
+		local expected = "-- hello\nreplaced\nfunction foo() return end\n-- world"
+
+		checkReplacement(source, expected, function(cst)
+			return query.findAllFromRoot(cst, syntaxUtils.isAttribute):replace(function()
+				return "replaced"
+			end)
+		end, assert)
+	end)
+
+	suite:case("commentsInCall", function(assert)
+		local source = [[foobar(
+  foo, -- what about this
+  bar, -- and this
+  baz -- and this??
+)]]
+
+		local expected = "foobar(\n  foo, -- what about this\n  bar, -- and this\n  quxx -- and this??\n)"
+
+		checkReplacement(source, expected, function(cst)
+			return query
+				.findAllFromRoot(cst, syntaxUtils.isExprGlobal)
+				:filter(function(g)
+					return g.name.text == "baz"
+				end)
+				:replace(function()
+					return "quxx"
+				end)
+		end, assert)
+	end)
+
+	suite:case("commentsInTable", function(assert)
+		local source = [[local x = {
+  foo = -- what about this
+  1, 
+  bar = 2, 
+  -- and this
+  
+  baz = 3 -- and this??
+}]]
+
+		local expected = [[local x = {
+  replaced = -- what about this
+  1, 
+  replaced = 2, 
+  -- and this
+  
+  replaced = 3 -- and this??
+}]]
+
+		checkReplacement(source, expected, function(cst)
+			return query
+				.findAllFromRoot(cst, syntaxUtils.isExprTable)
+				:flatMap(function(t)
+					local l = {}
+					for _, entry in t.entries do
+						if entry.kind ~= "list" then
+							table.insert(l, entry.key)
+						end
+					end
+					return l
+				end)
+				:replace(function()
+					return "replaced"
+				end)
+		end, assert)
+	end)
+end)

@@ -12,11 +12,21 @@ pub async fn stream_open(state: SharedRpcState, req: &rt::StreamOpenRequest) -> 
                 reader: Box::new(std::io::BufReader::new(file)),
             }
         }
-        "w" => StreamHandler::FileWriter {
-            path: req.path.clone(),
-            buffer: Vec::new(),
-        },
+        // A file opened to write exists from open, as in other runtimes ("w"
+        // truncates it); what's written lands on close.
+        "w" => {
+            std::fs::File::create(&req.path).map_err(|e| format!("open error: {e}"))?;
+            StreamHandler::FileWriter {
+                path: req.path.clone(),
+                buffer: Vec::new(),
+            }
+        }
         "a" => {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&req.path)
+                .map_err(|e| format!("open error: {e}"))?;
             let existing = if std::path::Path::new(&req.path).is_file() {
                 std::fs::read(&req.path).unwrap_or_default()
             } else {
