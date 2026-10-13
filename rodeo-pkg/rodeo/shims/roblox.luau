@@ -1,12 +1,8 @@
 -- @rodeo/roblox shim. import/export come from the factory-built singleton
 -- (transport tier); captureViewport is implemented here in the shim (composition
 -- tier) — it only needs the public fs/stream/process API plus engine services
--- and the singleton's internal capture plumbing, so it rides the inlined
--- bundle and works over any backend the singleton fronts.
---
--- NOTE: this file is inlined into user scripts as an IIFE with all comments
--- stripped (see bundle.rs inline_shims). Do not put `--` inside string
--- literals.
+-- and the singleton's internal capture plumbing, so it rides the bundle and
+-- works over any backend the singleton fronts.
 local plugins, key = _G.__rodeo_plugins, script and script:GetAttribute("rodeoPlugin")
 local ns = plugins and key and plugins[key]
 local g = if ns then ns.procs[script:GetAttribute("rodeoExecutionId")] else _G.__rodeo_procs[_G.__rodeo_eid]

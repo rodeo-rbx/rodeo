@@ -1,0 +1,251 @@
+--!strict
+--!native
+-- @std/syntax/printer
+
+local triviaUtils = require("./utils/trivia")
+local types = require("./types")
+local visitor = require("./visitor")
+
+local printerLib = {}
+
+type PrintVisitor = visitor.Visitor & {
+	result: buffer,
+	cursor: number,
+	replacements: types.Replacements,
+	write: (self: PrintVisitor, str: string) -> (),
+	printTrivia: (self: PrintVisitor, trivia: types.Trivia) -> (),
+	printTriviaList: (self: PrintVisitor, trivia: { types.Trivia }) -> (),
+	printToken: (self: PrintVisitor, token: types.CstToken) -> (),
+	printString: (self: PrintVisitor, expr: types.CstExprConstantString | types.CstTypeSingletonString) -> (),
+	printInterpolatedString: (self: PrintVisitor, expr: types.CstExprInterpString) -> (),
+	printReplacement: (self: PrintVisitor, node: types.CstNode, replacement: types.Replacement) -> (),
+	printTableTypeItem: (self: PrintVisitor, node: types.CstTableTypeItem) -> (),
+}
+local function exhaustiveMatch(value: never): never
+	error(`Unknown value in exhaustive match: {value}`)
+end
+
+local function printTrivia(self: PrintVisitor, trivia: types.Trivia)
+	if trivia.tag == "whitespace" or trivia.tag == "comment" or trivia.tag == "blockcomment" then
+		self:write(trivia.text)
+	else
+		exhaustiveMatch(trivia.tag)
+	end
+end
+
+local function printTriviaList(self: PrintVisitor, trivia: { types.Trivia })
+	for _, trivia in trivia do
+		self:printTrivia(trivia)
+	end
+end
+
+local function printToken(self: PrintVisitor, token: types.CstToken)
+	if self.replacements[token] ~= nil then
+		self:printReplacement(token, self.replacements[token])
+		return
+	end
+
+	self:printTriviaList(token.leadingTrivia)
+	self:write(token.text)
+	self:printTriviaList(token.trailingTrivia)
+end
+
+local function printString(self: PrintVisitor, expr: types.CstExprConstantString | types.CstTypeSingletonString)
+	if self.replacements[expr] ~= nil then
+		self:printReplacement(expr, self.replacements[expr])
+		return
+	end
+
+	self:printTriviaList(expr.value.leadingTrivia)
+
+	if expr.quoteStyle == "single" then
+		self:write(`'{expr.value.text}'`)
+	elseif expr.quoteStyle == "double" then
+		self:write(`"{expr.value.text}"`)
+	elseif expr.quoteStyle == "block" then
+		local equals = string.rep("=", expr.blockDepth)
+		self:write(`[{equals}[{expr.value.text}]{equals}]`)
+	elseif expr.quoteStyle == "interp" then
+		self:write("`" .. expr.value.text .. "`")
+	else
+		exhaustiveMatch(expr.quoteStyle)
+	end
+
+	self:printTriviaList(expr.value.trailingTrivia)
+end
+
+local function printInterpolatedString(self: PrintVisitor, expr: types.CstExprInterpString)
+	if self.replacements[expr] ~= nil then
+		self:printReplacement(expr, self.replacements[expr])
+		return
+	end
+
+	for i = 1, #expr.strings do
+		self:printTriviaList(expr.strings[i].leadingTrivia)
+		if i == 1 then
+			self:write("`")
+		else
+			self:write("}")
+		end
+		self:write(expr.strings[i].text)
+
+		if i == #expr.strings then
+			self:write("`")
+			self:printTriviaList(expr.strings[i].trailingTrivia)
+		else
+			self:write("{")
+			self:printTriviaList(expr.strings[i].trailingTrivia)
+			visitor.visitExpression(expr.expressions[i], self)
+		end
+	end
+end
+
+local function printTableTypeItem(self: PrintVisitor, node: types.CstTableTypeItem)
+	if node.access then
+		printToken(self, node.access)
+	end
+	if node.kind == "indexer" then
+		printToken(self, node.indexerOpen)
+		visitor.visitType(node.key, self)
+		printToken(self, node.indexerClose)
+	elseif node.kind == "property" then
+		if node.indexerOpen then
+			printToken(self, node.indexerOpen)
+		end
+
+		if node.quoteStyle then
+			self:write(if node.quoteStyle == "single" then "'" else '"')
+		end
+
+		printToken(self, node.key)
+
+		if node.quoteStyle then
+			self:write(if node.quoteStyle == "single" then "'" else '"')
+		end
+
+		if node.indexerClose then
+			printToken(self, node.indexerClose)
+		end
+	else
+		exhaustiveMatch(node.kind)
+	end
+	printToken(self, node.colon)
+	visitor.visitType(node.value, self)
+	if node.separator then
+		printToken(self, node.separator)
+	end
+end
+
+local function printReplacement(self: PrintVisitor, node: types.CstNode, replacement: types.Replacement)
+	assert(typeof(replacement) == "string" or typeof(replacement) == "table", "Unsupported replacement type")
+
+	local replacementContent = if typeof(replacement) == "string" then replacement else replacement.content
+	local preserveTrivia = if typeof(replacement) == "table" then replacement.preserveTrivia ~= false else true
+
+	if preserveTrivia then
+		local leftmostTrivia = triviaUtils.leftmostTrivia(node)
+		if leftmostTrivia ~= nil then
+			self:printTriviaList(leftmostTrivia)
+		end
+	end
+
+	self:write(replacementContent)
+
+	if preserveTrivia then
+		local rightmostTrivia = triviaUtils.rightmostTrivia(node)
+		if rightmostTrivia ~= nil then
+			self:printTriviaList(rightmostTrivia)
+		end
+	end
+end
+
+local function write(self: PrintVisitor, str: string)
+	local totalSize = self.cursor + #str
+	local bufferSize = buffer.len(self.result)
+
+	if totalSize >= bufferSize then
+		repeat
+			bufferSize *= 2
+		until bufferSize >= totalSize
+
+		local newBuffer = buffer.create(bufferSize)
+		buffer.copy(newBuffer, 0, self.result)
+		self.result = newBuffer
+	end
+
+	buffer.writestring(self.result, self.cursor, str)
+	self.cursor = totalSize
+end
+
+local function printVisitor(replacements: types.Replacements?)
+	local result = buffer.create(1024)
+	local cursor = 0
+
+	local printer: PrintVisitor = {} :: PrintVisitor
+
+	-- The visitor library doesn't use methods, so we access replacements through a closure
+	local function maybeReplace(node: types.CstNode): boolean
+		if replacements == nil then
+			return true
+		end
+		local replacement: types.Replacement? = replacements[node]
+		if replacement == nil then
+			return true
+		end
+		printer:printReplacement(node, replacement)
+		return false
+	end
+
+	printer = visitor.create(maybeReplace) :: PrintVisitor
+
+	printer.result = result
+	printer.cursor = cursor
+	printer.replacements = if replacements ~= nil then replacements else {} :: types.Replacements
+	printer.write = write
+	printer.printTrivia = printTrivia
+	printer.printTriviaList = printTriviaList
+	printer.printToken = printToken
+	printer.printString = printString
+	printer.printInterpolatedString = printInterpolatedString
+	printer.printReplacement = printReplacement
+	printer.printTableTypeItem = printTableTypeItem
+	printer.visitExprInterpString = function(node: types.CstExprInterpString)
+		printer:printInterpolatedString(node)
+		return false
+	end
+	printer.visitTypeSingletonString = function(node: types.CstTypeSingletonString)
+		printer:printString(node)
+		return false
+	end
+	printer.visitToken = function(node: types.CstToken)
+		printer:printToken(node)
+		return false
+	end
+	printer.visitExprConstantString = function(node: types.CstExprConstantString)
+		printer:printString(node)
+		return false
+	end
+	printer.visitTableTypeItem = function(node: types.CstTableTypeItem)
+		printer:printTableTypeItem(node)
+		return false
+	end
+
+	return printer
+end
+
+--- Returns `node` as source text, optionally applying `replacements` to substitute specific nodes with new text.
+function printerLib.printNode(node: types.CstNode, replacements: types.Replacements?): string
+	local printer = printVisitor(replacements)
+	visitor.visit(node, printer)
+	return buffer.readstring(printer.result, 0, printer.cursor)
+end
+
+--- Returns an entire parsed file as source text, including the EOF token, optionally applying `replacements`.
+function printerLib.printFile(result: types.CstParseResult, replacements: types.Replacements?): string
+	local printer = printVisitor(replacements)
+	visitor.visitBlock(result.root, printer)
+	visitor.visitToken(result.eof, printer)
+	return buffer.readstring(printer.result, 0, printer.cursor)
+end
+
+return table.freeze(printerLib)

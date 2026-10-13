@@ -2,9 +2,6 @@
 -- frozen values with locked metatables, arithmetic and comparison operators,
 -- nanosecond precision (as precise as double-held nanos allow). Instants are
 -- monotonic via os.clock().
---
--- NOTE: inlined as an IIFE with comments stripped (bundle.rs inline_shims).
--- No `--` inside string literals.
 
 local Duration
 

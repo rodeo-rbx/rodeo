@@ -2,12 +2,11 @@
 -- Timestamps in stat are @lute/time Durations (since the Unix epoch), per
 -- lute's FileMetadata.
 --
--- Unsupported here: link/symlink/watch (no host RPC) and the read+write
--- handle modes (host handles are a reader OR a writer). Each errors with a
--- clear message rather than misbehaving.
---
--- NOTE: inlined as an IIFE with comments stripped (bundle.rs inline_shims).
--- No `--` inside string literals.
+-- Host handles are a reader OR a writer. "w+", "x+" and "a+" open a writer
+-- (Lute's std writes files with "w+" and never reads them back), and reading
+-- such a handle errors; "r+" can't be offered. link/symlink/watch have no host
+-- RPC. Each unsupported case errors with a clear message rather than
+-- misbehaving.
 local g = _G.__rodeo_procs[_G.__rodeo_eid]
 local time = require("@lute/time")
 
@@ -18,20 +17,39 @@ local function isDirPath(path: string): boolean
 	return ok and result == "dir"
 end
 
+-- Handles opened with a "+" mode, by mode: rodeo opened them as writers.
+local writeOnly = setmetatable({}, { __mode = "k" })
+
+local function checkReadable(handle, fn: string)
+	local mode = writeOnly[handle]
+	if mode then
+		error(`fs.{fn}: this handle was opened with "{mode}", which is write-only under rodeo (open with "r" to read)`, 3)
+	end
+end
+
 function fs.open(path: string, mode: string?)
-	local m = mode or "r"
-	if m == "x" then
+	local requested = mode or "r"
+	local plus = string.sub(requested, -1) == "+"
+	local m = if plus then string.sub(requested, 1, -2) else requested
+	if m == "r" and plus then
+		error(`fs.open: mode 'r+' is not supported under rodeo (a handle reads or writes, not both)`, 2)
+	elseif m == "x" then
 		if g.fs.exists(path) then
-			error(`fs.open: '{path}' already exists (mode "x")`, 2)
+			error(`fs.open: '{path}' already exists (mode "{requested}")`, 2)
 		end
 		m = "w"
 	elseif m ~= "r" and m ~= "w" and m ~= "a" then
-		error(`fs.open: mode '{m}' is not supported under rodeo (handles are read OR write: use "r", "w", "x", or "a")`, 2)
+		error(`fs.open: mode '{requested}' is not supported under rodeo (use "r", "w", "w+", "x", "x+", "a" or "a+")`, 2)
 	end
-	return g.fs.open(path, m)
+	local handle = g.fs.open(path, m)
+	if plus then
+		writeOnly[handle] = requested
+	end
+	return handle
 end
 
 function fs.read(handle): string
+	checkReadable(handle, "read")
 	return buffer.tostring(g.stream.readBytes(handle))
 end
 
@@ -48,6 +66,7 @@ end
 -- requested window. fileOffset is absolute from the start of the file, so
 -- this is only valid as the handle's first read.
 function fs.readIntoBuffer(handle, buf: buffer, fileOffset: number, numBytes: number, bufferOffset: number?): number
+	checkReadable(handle, "readIntoBuffer")
 	local content = g.stream.readBytes(handle)
 	local available = buffer.len(content) - fileOffset
 	local n = math.max(0, math.min(numBytes, available))

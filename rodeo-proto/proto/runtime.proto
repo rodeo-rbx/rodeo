@@ -301,6 +301,8 @@ message ProcessGetInfoResponse {
   optional string platform = 5;
   optional string arch = 6;
   optional string studio_content_path = 7;
+  optional string tmpdir = 8;        // the host's temporary directory
+  optional uint32 thread_count = 9;  // logical CPU threads available on the host
 }
 
 message ProcessExitRequest {

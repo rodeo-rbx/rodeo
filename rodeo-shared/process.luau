@@ -55,6 +55,15 @@ return function(rpc, scriptArgs, hostInfo, runtime)
 		return hostInfo.platform or ""
 	end
 
+	-- Host facts the runtime adapters need (@lute/system), not part of
+	-- @rodeo/process's own API.
+	process.__host = table.freeze({
+		platform = hostInfo.platform or "",
+		arch = hostInfo.arch or "",
+		tmpdir = hostInfo.tmpdir or "",
+		threadCount = hostInfo.threadCount or 1,
+	})
+
 	function process.exit(code: number)
 		rpc.notify("process_exit", runtime.ProcessExitRequest.new({ code = code }))
 		coroutine.yield()

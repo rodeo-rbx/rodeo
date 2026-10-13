@@ -1251,6 +1251,8 @@ type _ProcessGetInfoResponseFields = {
 	platform: string?,
 	arch: string?,
 	studioContentPath: string?,
+	tmpdir: string?,
+	threadCount: number?,
 }
 
 export type _ProcessGetInfoResponsePartialFields = {
@@ -1261,6 +1263,8 @@ export type _ProcessGetInfoResponsePartialFields = {
 	platform: string?,
 	arch: string?,
 	studioContentPath: string?,
+	tmpdir: string?,
+	threadCount: number?,
 }
 
 export type ProcessGetInfoResponse = typeof(setmetatable(
@@ -7141,6 +7145,8 @@ do
 			platform = if data == nil or data.platform == nil then nil else data.platform,
 			arch = if data == nil or data.arch == nil then nil else data.arch,
 			studioContentPath = if data == nil or data.studioContentPath == nil then nil else data.studioContentPath,
+			tmpdir = if data == nil or data.tmpdir == nil then nil else data.tmpdir,
+			threadCount = if data == nil or data.threadCount == nil then nil else data.threadCount,
 		}, _ProcessGetInfoResponseImpl :: _ProcessGetInfoResponseImpl)
 	end
 
@@ -7192,6 +7198,16 @@ do
 			output, cursor = proto.writeString(output, cursor, self.studioContentPath)
 		end
 
+		if self.tmpdir ~= nil then
+			output, cursor = proto.writeTag(output, cursor, 8, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.tmpdir)
+		end
+
+		if self.threadCount ~= nil then
+			output, cursor = proto.writeTag(output, cursor, 9, proto.wireTypes.varint)
+			output, cursor = proto.writeVarInt(output, cursor, self.threadCount)
+		end
+
 		local shrunkBuffer = buffer.create(cursor)
 		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
 		return shrunkBuffer
@@ -7206,7 +7222,12 @@ do
 			field, wireType, cursor = proto.readTag(input, cursor)
 
 			if wireType == proto.wireTypes.varint then
-				-- No fields
+				if field == 9 then
+					local value
+					value, cursor = proto.readVarIntU32(input, cursor)
+					self.threadCount = value
+					continue
+				end
 
 				local _
 				_, cursor = proto.readVarInt(input, cursor)
@@ -7252,6 +7273,11 @@ do
 					local value
 					value, cursor = proto.readBuffer(input, cursor)
 					self.studioContentPath = proto.decodeString(value)
+					continue
+				elseif field == 8 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.tmpdir = proto.decodeString(value)
 					continue
 				end
 
@@ -7313,6 +7339,14 @@ do
 			output.studioContentPath = self.studioContentPath
 		end
 
+		if self.tmpdir ~= nil then
+			output.tmpdir = self.tmpdir
+		end
+
+		if self.threadCount ~= nil then
+			output.threadCount = self.threadCount
+		end
+
 		return output
 	end
 
@@ -7350,6 +7384,14 @@ do
 
 		if input.studioContentPath ~= nil then
 			self.studioContentPath = input.studioContentPath
+		end
+
+		if input.tmpdir ~= nil then
+			self.tmpdir = input.tmpdir
+		end
+
+		if input.threadCount ~= nil then
+			self.threadCount = input.threadCount
 		end
 
 		return self
