@@ -87,8 +87,9 @@ fn bundle_inner(
                 .with_configuration(config)
                 .with_output(&converted_path);
 
-            process(resources, opts)
+            let convert_tree = process(resources, opts)
                 .map_err(|e| anyhow::anyhow!("pass 1 (convert_require) failed: {e}"))?;
+            check_darklua_result(convert_tree, "convert the requires of", script_path)?;
 
             if !converted_path.exists() {
                 bail!(
@@ -107,7 +108,11 @@ fn bundle_inner(
     let require_mode: BundleRequireMode = "luau".parse()
         .map_err(|e: String| anyhow::anyhow!(e))
         .context("invalid bundle require mode")?;
-    let mut bundle_config = BundleConfiguration::new(require_mode);
+    // A require through an alias that doesn't resolve stays as written, and
+    // only errors in Studio if it runs: code written for another runtime can
+    // require that runtime's modules on a path Studio never takes.
+    let mut bundle_config =
+        BundleConfiguration::new(require_mode).with_keep_unresolved_aliases(true);
     for exclude in &excludes {
         bundle_config = bundle_config.with_exclude(exclude.clone());
     }
@@ -121,8 +126,9 @@ fn bundle_inner(
         .with_configuration(config)
         .with_output(&bundled_path);
 
-    process(resources, opts)
+    let bundle_tree = process(resources, opts)
         .map_err(|e| anyhow::anyhow!("pass 2 (bundle) failed: {e}"))?;
+    check_darklua_result(bundle_tree, "bundle", &input_path)?;
 
     if !bundled_path.exists() {
         bail!(
@@ -140,6 +146,21 @@ fn bundle_inner(
     }
 
     Ok(bundled)
+}
+
+/// darklua reports what went wrong (a parse error, a require it can't
+/// resolve) in the worker tree rather than as `process`'s error, and then
+/// writes no output. Fail with those messages.
+fn check_darklua_result(tree: darklua_core::WorkerTree, action: &str, path: &Path) -> Result<()> {
+    let Err(errors) = tree.result() else {
+        return Ok(());
+    };
+    let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+    bail!(
+        "darklua couldn't {action} '{}':\n- {}",
+        path.display(),
+        messages.join("\n- ")
+    )
 }
 
 /// Replace `require("@alias/...")` calls with inlined adapter shim IIFEs.
@@ -231,4 +252,69 @@ fn convert_require_rule(
 
     serde_json::from_value::<Box<dyn darklua_core::rules::Rule>>(rule)
         .context("failed to create convert_require rule")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory holding `files`, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let dir = std::env::temp_dir().join(format!("rodeo-bundle-test-{}", uuid::Uuid::new_v4()));
+            for (name, content) in files {
+                let path = dir.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, content).unwrap();
+            }
+            Self(dir)
+        }
+
+        fn bundle(&self, entry: &str) -> Result<String> {
+            let options = BundleOptions { sourcemap: None, verbose: false };
+            bundle(self.0.join(entry).to_str().unwrap(), &options)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_failed_bundle_reports_darklua_errors() {
+        let scratch = Scratch::new(&[("main.luau", "return require('./missing')")]);
+
+        let err = format!("{:#}", scratch.bundle("main.luau").unwrap_err());
+
+        assert!(err.contains("missing"), "{err}");
+        assert!(!err.contains("check .luaurc"), "{err}");
+    }
+
+    #[test]
+    fn a_require_through_an_unknown_alias_stays_as_written() {
+        let scratch = Scratch::new(&[(
+            "main.luau",
+            "local fs = if game then nil else require('@std/fs')\nreturn fs",
+        )]);
+
+        let bundled = scratch.bundle("main.luau").unwrap();
+
+        assert!(bundled.contains("require('@std/fs')"), "{bundled}");
+    }
+
+    #[test]
+    fn a_hex_literal_larger_than_64_bits_bundles() {
+        let scratch = Scratch::new(&[
+            ("main.luau", "return require('./value')"),
+            ("value.luau", "return 0x1_0000_0000_0000_0000"),
+        ]);
+
+        let bundled = scratch.bundle("main.luau").unwrap();
+
+        assert!(bundled.contains("0x1_0000_0000_0000_0000"), "{bundled}");
+    }
 }

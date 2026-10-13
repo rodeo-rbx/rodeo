@@ -191,7 +191,7 @@ jobs:
         uses: jdx/mise-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MISE_DISABLE_TOOLS: "ubi:JohnnyMorganz/luau-lsp,ubi:Kampfkarren/selene,ubi:cloudflare/cloudflared,ubi:revvy02/protoc-gen-luau,github:luau-lang/lute,ubi:revvy02/rbx-microprofiler,ubi:rojo-rbx/rojo,ubi:seaofvoices/darklua,ubi:jacktabscode/asphalt,ubi:Sleitnick/rbxcloud"
+          MISE_DISABLE_TOOLS: "ubi:JohnnyMorganz/luau-lsp,ubi:Kampfkarren/selene,ubi:cloudflare/cloudflared,ubi:revvy02/protoc-gen-luau,github:luau-lang/lute,ubi:revvy02/rbx-microprofiler,ubi:rojo-rbx/rojo,ubi:rodeo-rbx/darklua,ubi:jacktabscode/asphalt,ubi:Sleitnick/rbxcloud"
 
       - name: Set rodeo-client-lune version from tag
         run: |
