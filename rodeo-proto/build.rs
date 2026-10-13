@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -44,24 +44,33 @@ fn emit_build_id() {
         .expect("rodeo-cli/Cargo.toml: no `version = \"…\"` line");
 
     // Rerun when HEAD moves: track HEAD itself, the ref it points at, and
-    // packed-refs. Only existing paths — a missing rerun-if-changed target
-    // forces a rebuild every time.
-    let git_dir = repo_root.join(".git");
-    if git_dir.is_dir() {
-        let head = git_dir.join("HEAD");
+    // packed-refs. git resolves where they live: in a worktree, `.git` is a
+    // file, HEAD is in the worktree's own git dir and refs are in the shared
+    // one (missing that left a worktree build's id stale while the plugin's
+    // moved on, and the backend parked its own plugin as a mismatch). Only
+    // existing paths — a missing rerun-if-changed target forces a rebuild
+    // every time.
+    let git_path = |name: &str| -> Option<PathBuf> {
+        let out = Command::new("git")
+            .args(["rev-parse", "--git-path", name])
+            .current_dir(&repo_root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        let path = if path.is_absolute() { path } else { repo_root.join(path) };
+        path.exists().then_some(path)
+    };
+    if let Some(head) = git_path("HEAD") {
         println!("cargo:rerun-if-changed={}", head.display());
         if let Ok(contents) = std::fs::read_to_string(&head) {
-            if let Some(r) = contents.trim().strip_prefix("ref: ") {
-                let ref_path = git_dir.join(r);
-                if ref_path.exists() {
-                    println!("cargo:rerun-if-changed={}", ref_path.display());
-                }
+            if let Some(ref_path) = contents.trim().strip_prefix("ref: ").and_then(git_path) {
+                println!("cargo:rerun-if-changed={}", ref_path.display());
             }
         }
-        let packed = git_dir.join("packed-refs");
-        if packed.exists() {
-            println!("cargo:rerun-if-changed={}", packed.display());
-        }
+    }
+    if let Some(packed) = git_path("packed-refs") {
+        println!("cargo:rerun-if-changed={}", packed.display());
     }
 
     let sha = Command::new("git")
