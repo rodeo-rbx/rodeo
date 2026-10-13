@@ -1,3 +1,4 @@
+-- @rodeo run --adapter lune
 local r = require("@rodeo/roblox")
 local fs = require("@lune/fs")
 local serde = require("@lune/serde")

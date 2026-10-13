@@ -384,6 +384,7 @@ export function makeCliRunFn(
       else args.push("--source", opts.source);
     }
     if (opts.sourcemap !== undefined) args.push("--sourcemap", opts.sourcemap);
+    for (const adapter of opts.adapters ?? []) args.push("--adapter", adapter);
     if (opts.showReturn) args.push("--show-return");
     if (opts.reloadRequires) args.push("--reload-requires");
     if (opts.mode !== undefined) args.push("--mode", opts.mode);

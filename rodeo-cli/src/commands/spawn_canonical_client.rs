@@ -456,15 +456,20 @@ async fn mp_close(state: Arc<State>, params: Value) -> Result<Value> {
 /// the type level, so they arrive absent → None.
 ///
 /// The script arrives as the caller has it — a `file`, or inline `source` —
-/// with an optional rojo `sourcemap`, and is processed here the way `rodeo
-/// run` processes it (bundle + shims + ensure_return).
+/// with an optional rojo `sourcemap` and the `adapters` to enable, and is
+/// processed here the way `rodeo run` processes it (bundle + ensure_return).
 async fn read_run_opts(params: &Value) -> Result<RunCodeOpts> {
     let str_opt = |k: &str| params.get(k).and_then(|v| v.as_str()).map(String::from);
     let (file, source, sourcemap) = (str_opt("file"), str_opt("source"), str_opt("sourcemap"));
     if file.is_none() && source.is_none() {
         return Err(anyhow!("runCode requires either `source` or `file`"));
     }
-    let processed = tokio::task::spawn_blocking(move || process_source::process(file, source, sourcemap))
+    let adapters: Vec<String> = params
+        .get("adapters")
+        .and_then(|v| v.as_array())
+        .map(|list| list.iter().filter_map(|a| a.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let processed = tokio::task::spawn_blocking(move || process_source::process(file, source, sourcemap, adapters))
         .await?
         .context("source processing failed")?;
 

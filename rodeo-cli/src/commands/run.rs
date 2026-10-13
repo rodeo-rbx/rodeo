@@ -10,6 +10,7 @@ pub struct RunArgs {
     pub script: Option<String>,
     pub source: Option<String>,
     pub sourcemap: Option<String>,
+    pub adapters: Vec<String>,
     pub output: Option<String>,
     pub return_file: Option<String>,
     pub show_return: bool,
@@ -202,7 +203,7 @@ fn resolve_script(args: &mut RunArgs) -> Result<ResolvedScript> {
         bail!("no script source provided. Use a file path, '-' for stdin, or --source for inline execution");
     }
 
-    let processed = process_source::process(script_path, args.source.clone(), args.sourcemap.clone())
+    let processed = process_source::process(script_path, args.source.clone(), args.sourcemap.clone(), args.adapters.clone())
         .context("source processing failed")?;
 
     // Directive merging is done in the parent at main.rs entry before clap

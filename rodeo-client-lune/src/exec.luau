@@ -88,6 +88,7 @@ local function runViaDaemon(
 		file = opts.file,
 		source = if opts.file then nil else opts.source,
 		sourcemap = if opts.file then opts.sourcemap else nil,
+		adapters = opts.adapters or {},
 		mode = opts.mode,
 		domKind = opts.domKind,
 		context = opts.context,

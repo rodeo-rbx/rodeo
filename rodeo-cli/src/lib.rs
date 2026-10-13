@@ -67,7 +67,7 @@ fn build_banner() -> String {
 /// these are exempt from the directive-token override filter. Keep in sync if
 /// new repeatable args are added to `Commands::Run` (or other commands that
 /// participate in the directive splice).
-const REPEATABLE_DIRECTIVE_FLAGS: &[&str] = &["--fflag.override"];
+const REPEATABLE_DIRECTIVE_FLAGS: &[&str] = &["--fflag.override", "--adapter"];
 
 /// Directive flags that a differently-named user flag overrides, because the
 /// two pick the Studio in incompatible ways: a directive's `--place` documents
@@ -324,7 +324,7 @@ pub async fn run() {
             };
             commands::serve::main(port, mode).await
         }
-        Commands::Run { script, source, sourcemap, output, return_file, show_return, mode, dom_kind, context, studio_id, no_warn, no_error, no_info, no_print, no_output, reload_requires, cache_requires_removed, script_args, ppid, server, place, fflags } => {
+        Commands::Run { script, source, sourcemap, adapters, output, return_file, show_return, mode, dom_kind, context, studio_id, no_warn, no_error, no_info, no_print, no_output, reload_requires, cache_requires_removed, script_args, ppid, server, place, fflags } => {
             if cache_requires_removed {
                 eprintln!(
                     "rodeo: --cache-requires was removed — caching instance requires is the default now.\n\
@@ -336,7 +336,7 @@ pub async fn run() {
             if let Some(ppid) = ppid { parent_exit::on_parent_exit(ppid); }
             let script_args = if script_args.is_empty() { directive_script_args } else { script_args };
             commands::run::main(commands::run::RunArgs {
-                script, source, sourcemap, output, return_file, show_return,
+                script, source, sourcemap, adapters, output, return_file, show_return,
                 mode: mode.map(|m| m.as_str().to_string()),
                 dom_kind: dom_kind.map(|d| d.as_str().to_string()),
                 context: context.map(|c| c.as_str().to_string()),
@@ -387,19 +387,21 @@ mod directive_splice_tests {
         place_universe: Option<u64>,
         save: Option<String>,
         show_return: bool,
+        adapters: Vec<String>,
     }
 
     /// Parse `argv` the way `run()` does when the script carries `directive`.
     fn parse(argv: &[&str], directive: &[&str]) -> Result<Parsed, clap::Error> {
         let spliced = splice_directive(&strings(argv), &strings(directive));
         match Cli::try_parse_from(spliced)?.command {
-            Commands::Run { studio_id, show_return, place, .. } => Ok(Parsed {
+            Commands::Run { studio_id, show_return, place, adapters, .. } => Ok(Parsed {
                 studio_id,
                 dom_id: place.dom_id,
                 place: place.place,
                 place_universe: place.place_universe,
                 save: place.save,
                 show_return,
+                adapters,
             }),
             _ => unreachable!(),
         }
@@ -466,6 +468,15 @@ mod directive_splice_tests {
         assert_eq!((p.studio_id, p.place.as_deref()), (None, Some("other.rbxl")));
         let p = parse(&["rodeo", "run", "script.luau", "--place"], &["--dom-id", "d0m"]).unwrap();
         assert_eq!((p.dom_id, p.place.as_deref()), (None, Some("")));
+    }
+
+    // A script declares the runtime it was written for; the CLI can add more.
+    #[test]
+    fn directive_and_cli_adapters_combine() {
+        let p = parse(&["rodeo", "run", "script.luau"], &["--adapter", "lute"]).unwrap();
+        assert_eq!(p.adapters, ["lute"]);
+        let p = parse(&["rodeo", "run", "script.luau", "--adapter", "lune"], &["--adapter", "lute"]).unwrap();
+        assert_eq!(p.adapters, ["lune", "lute"]);
     }
 
     #[test]

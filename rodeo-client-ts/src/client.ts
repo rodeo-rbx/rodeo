@@ -85,6 +85,7 @@ async function daemonRunCode(
       file: opts.file ?? null,
       source: opts.file ? null : opts.source,
       sourcemap: opts.file ? (opts.sourcemap ?? null) : null,
+      adapters: opts.adapters ?? [],
       mode: route.mode ?? null,
       domKind: route.domKind ?? null,
       context: opts.context ?? null,

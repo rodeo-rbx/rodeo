@@ -180,7 +180,7 @@ describe("lune conformance", () => {
         for (const name of CWD_FILES[file] ?? []) writeFileSync(join(cwd, name), "");
         const extraArgs = ARGS[file] ? ["--", ...ARGS[file]] : [];
         const proc = Bun.spawnSync(
-          [RODEO, "run", join(SUITE_DIR, file), "--port", String(PORT), ...extraArgs],
+          [RODEO, "run", join(SUITE_DIR, file), "--adapter", "lune", "--port", String(PORT), ...extraArgs],
           { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
         );
         const stdout = proc.stdout?.toString() ?? "";
@@ -275,7 +275,7 @@ describe("lune adapter process.create", () => {
       const cwd = mkdtempSync(join(tmpdir(), "rodeo-lune-create-"));
       scratchDirs.push(cwd);
       const proc = Bun.spawnSync(
-        [RODEO, "run", "--source", CREATE_SOURCE, "--port", String(PORT)],
+        [RODEO, "run", "--adapter", "lune", "--source", CREATE_SOURCE, "--port", String(PORT)],
         { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
       );
       const stdout = proc.stdout?.toString() ?? "";
@@ -295,7 +295,7 @@ describe("lune adapter unsupported members", () => {
       const cwd = mkdtempSync(join(tmpdir(), "rodeo-lune-unsupported-"));
       scratchDirs.push(cwd);
       const proc = Bun.spawnSync(
-        [RODEO, "run", "--source", UNSUPPORTED_SOURCE, "--port", String(PORT)],
+        [RODEO, "run", "--adapter", "lune", "--source", UNSUPPORTED_SOURCE, "--port", String(PORT)],
         { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
       );
       const stdout = proc.stdout?.toString() ?? "";

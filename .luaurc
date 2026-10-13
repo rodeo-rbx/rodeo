@@ -7,7 +7,6 @@
     "luaupkg": "./luau_packages",
     "pkg": "./lune_packages",
     "lute": "~/.lute/typedefs/0.1.0/lute",
-    "rodeo": "~/.rodeo/typedefs/1.0.0-rc.3",
-    "adapters": "./rodeo-adapters"
+    "rodeo": "~/.rodeo/typedefs/1.0.0-rc.3"
   }
 }

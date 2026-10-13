@@ -1,7 +1,0 @@
-[package]
-name = "rvy/rodeo-lune"
-version = "0.1.0"
-registry = "https://github.com/UpliftGames/wally-index"
-realm = "shared"
-license = "MIT"
-description = "Rodeo runtime adapter for @lune/* APIs"

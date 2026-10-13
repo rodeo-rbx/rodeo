@@ -1073,16 +1073,23 @@ export function bundle(run: RunFn): void {
     expect(result.return).toBe("transitive_ok");
   });
 
-  it("resolves @lune/* shims", async () => {
-    const result = await run({ file: `${FIXTURES}/lune-shim.luau` });
+  it("resolves @lune/* with the lune adapter", async () => {
+    const result = await run({ file: `${FIXTURES}/lune-shim.luau`, adapters: ["lune"] });
     expect(result.ok).toBe(true);
     // "lune_shim_ok" is written to stdout, "cwd:..." is the return value.
     expect(result.output).toContain("lune_shim_ok");
     expect(String(result.return ?? "")).toContain("cwd:");
   });
 
+  it("leaves @lune/* unresolved without the lune adapter", async () => {
+    // Adapters are opt-in: the require stays as written and fails in Studio.
+    const result = await run({ file: `${FIXTURES}/lune-shim.luau` });
+    expect(result.ok).toBe(false);
+    expect(result.output).not.toContain("lune_shim_ok");
+  });
+
   it("resolves mixed @rodeo + relative + @lune requires", async () => {
-    const result = await run({ file: `${FIXTURES}/mixed-requires.luau` });
+    const result = await run({ file: `${FIXTURES}/mixed-requires.luau`, adapters: ["lune"] });
     expect(result.ok).toBe(true);
     // stdout has the assembled "mixed:from_helper:..." line; return is "mixed_ok".
     expect(result.output).toContain("mixed:from_helper:");

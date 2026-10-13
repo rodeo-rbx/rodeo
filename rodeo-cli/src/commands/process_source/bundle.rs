@@ -3,10 +3,9 @@
 /// Two-pass pipeline:
 ///   1. (optional, if sourcemap exists) convert_require with roblox target + sourcemap
 ///      → converts Wally package requires to Roblox instance paths
-///   2. darklua bundle with luau require mode (inlines filesystem deps, skips adapter requires)
-///
-/// Adapter shim inlining (replacing `require("@alias/...")` with IIFEs) is handled
-/// separately by `inline_shims()`, called from `client::run()` before submission.
+///   2. darklua bundle with luau require mode: inlines filesystem deps, and
+///      `@rodeo` plus the enabled adapters' aliases (see `adapters`), which are
+///      written to disk next to the bundle and bundled like any other module.
 
 use anyhow::{bail, Context, Result};
 use super::adapters;
@@ -14,12 +13,13 @@ use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
 };
 use darklua_core::rules::bundle::BundleRequireMode;
-use regex::Regex;
 use std::path::{Path, PathBuf};
 
 pub struct BundleOptions {
     pub sourcemap: Option<String>,
     pub verbose: bool,
+    /// Adapters to enable (`--adapter`), by name.
+    pub adapters: Vec<String>,
 }
 
 pub fn bundle(script_path: &str, options: &BundleOptions) -> Result<String> {
@@ -57,8 +57,6 @@ fn bundle_inner(
     converted_filename: &str,
     options: &BundleOptions,
 ) -> Result<String> {
-    let excludes = adapters::exclude_patterns();
-
     let mut input_path = script_path.to_path_buf();
 
     // Pass 1 (optional): convert requires via sourcemap to Roblox instance paths
@@ -102,20 +100,15 @@ fn bundle_inner(
         }
     }
 
-    // Pass 2: darklua bundle (inlines filesystem deps, skips adapter requires)
+    // Pass 2: darklua bundle (inlines filesystem deps and the alias trees)
     let bundled_path = tmp.join("bundled.luau");
 
-    let require_mode: BundleRequireMode = "luau".parse()
-        .map_err(|e: String| anyhow::anyhow!(e))
-        .context("invalid bundle require mode")?;
+    let alias_trees = adapters::write_alias_trees(&tmp.join("aliases"), &options.adapters)?;
+    let require_mode = luau_require_mode(&alias_trees)?;
     // A require through an alias that doesn't resolve stays as written, and
     // only errors in Studio if it runs: code written for another runtime can
     // require that runtime's modules on a path Studio never takes.
-    let mut bundle_config =
-        BundleConfiguration::new(require_mode).with_keep_unresolved_aliases(true);
-    for exclude in &excludes {
-        bundle_config = bundle_config.with_exclude(exclude.clone());
-    }
+    let bundle_config = BundleConfiguration::new(require_mode).with_keep_unresolved_aliases(true);
 
     let config = Configuration::empty()
         .with_generator(GeneratorParameters::RetainLines)
@@ -163,53 +156,22 @@ fn check_darklua_result(tree: darklua_core::WorkerTree, action: &str, path: &Pat
     )
 }
 
-/// Replace `require("@alias/...")` calls with inlined adapter shim IIFEs.
-///
-/// Called from `client::run()` on all scripts (both file-based and inline `--source`)
-/// before submission to the serve WebSocket.
-///
-/// Runs replacement passes to a fixpoint: a shim body may itself require
-/// another shim (e.g. @lute/fs requires @lute/time for Duration timestamps),
-/// and a single pass only resolves that when the inner shim's turn happens to
-/// come later in iteration order. Shims must not require themselves — the
-/// iteration cap turns that mistake into an error instead of unbounded
-/// growth.
-pub fn inline_shims(source: &str) -> Result<String> {
-    let adapters = adapters::load_adapters();
-    let mut result = source.to_string();
-
-    for _pass in 0..8 {
-        let before_len = result.len();
-        let mut changed = false;
-        for adapter in adapters {
-            let escaped_alias = regex::escape(adapter.alias);
-            for &(require_path, shim_src) in adapter.shims {
-                let pattern_str = if require_path.is_empty() {
-                    format!(r#"require\(["']{}["']\)"#, escaped_alias)
-                } else {
-                    format!(r#"require\(["']{}/{}["']\)"#, escaped_alias, require_path)
-                };
-                let re = Regex::new(&pattern_str)
-                    .context("invalid regex for adapter shim")?;
-
-                if re.is_match(&result) {
-                    let comment_re = Regex::new(r"--[^\n]*\n").unwrap();
-                    let clean_shim = comment_re.replace_all(shim_src, "\n");
-                    let iife = format!("(function() {} end)()", clean_shim.trim());
-                    result = re.replace_all(&result, iife.as_str()).to_string();
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return Ok(result);
-        }
-        // Growth without convergence after several passes = a shim cycle.
-        if _pass == 7 && result.len() > before_len {
-            bail!("adapter shim expansion did not converge (shim require cycle?)");
-        }
-    }
-    Ok(result)
+/// The luau require mode for bundling: `@rodeo` and the enabled adapters'
+/// aliases point at their written trees and take precedence over the
+/// project's `.luaurc`, which typically maps `@lune`/`@lute`/`@std`/`@rodeo`
+/// to type definitions. Other aliases still come from `.luaurc`.
+fn luau_require_mode(alias_trees: &[(&str, PathBuf)]) -> Result<BundleRequireMode> {
+    let aliases: serde_json::Map<String, serde_json::Value> = alias_trees
+        .iter()
+        .map(|(alias, path)| (alias.to_string(), path.display().to_string().into()))
+        .collect();
+    // darklua_core doesn't export the luau require mode's type; configure via serde.
+    serde_json::from_value(serde_json::json!({
+        "name": "luau",
+        "aliases": aliases,
+        "prefer_aliases": true,
+    }))
+    .context("failed to create the luau require mode")
 }
 
 /// Create a convert_require rule via JSON5 deserialization.
@@ -273,7 +235,15 @@ mod tests {
         }
 
         fn bundle(&self, entry: &str) -> Result<String> {
-            let options = BundleOptions { sourcemap: None, verbose: false };
+            self.bundle_with(entry, &[])
+        }
+
+        fn bundle_with(&self, entry: &str, adapters: &[&str]) -> Result<String> {
+            let options = BundleOptions {
+                sourcemap: None,
+                verbose: false,
+                adapters: adapters.iter().map(|a| a.to_string()).collect(),
+            };
             bundle(self.0.join(entry).to_str().unwrap(), &options)
         }
     }
@@ -304,6 +274,64 @@ mod tests {
         let bundled = scratch.bundle("main.luau").unwrap();
 
         assert!(bundled.contains("require('@std/fs')"), "{bundled}");
+    }
+
+    #[test]
+    fn rodeo_requires_always_bundle() {
+        let scratch = Scratch::new(&[("main.luau", "local fs = require('@rodeo/fs')\nreturn fs")]);
+
+        let bundled = scratch.bundle("main.luau").unwrap();
+
+        assert!(!bundled.contains("require('@rodeo/fs')"), "{bundled}");
+        assert!(bundled.contains("__rodeo_procs"), "{bundled}");
+    }
+
+    #[test]
+    fn an_adapter_require_stays_as_written_until_its_adapter_is_enabled() {
+        let scratch = Scratch::new(&[("main.luau", "local fs = require('@lune/fs')\nreturn fs")]);
+
+        let without = scratch.bundle("main.luau").unwrap();
+        let with = scratch.bundle_with("main.luau", &["lune"]).unwrap();
+
+        assert!(without.contains("require('@lune/fs')"), "{without}");
+        assert!(!with.contains("require('@lune/fs')"), "{with}");
+        assert!(with.contains("__rodeo_procs"), "{with}");
+    }
+
+    #[test]
+    fn an_enabled_adapter_overrides_the_luaurc_alias_and_otherwise_luaurc_is_followed() {
+        let scratch = Scratch::new(&[
+            ("main.luau", "return require('@lune/fs')"),
+            ("typedefs/lune/fs.luau", "return 'from luaurc typedefs'"),
+            (".luaurc", r#"{ "aliases": { "lune": "./typedefs/lune" } }"#),
+        ]);
+
+        let without = scratch.bundle("main.luau").unwrap();
+        let with = scratch.bundle_with("main.luau", &["lune"]).unwrap();
+
+        assert!(without.contains("from luaurc typedefs"), "{without}");
+        assert!(!with.contains("from luaurc typedefs"), "{with}");
+        assert!(with.contains("__rodeo_procs"), "{with}");
+    }
+
+    #[test]
+    fn an_adapter_module_bundles_the_modules_it_requires() {
+        // @lute/fs requires @lute/time for its Duration timestamps.
+        let scratch = Scratch::new(&[("main.luau", "return require('@lute/fs')")]);
+
+        let bundled = scratch.bundle_with("main.luau", &["lute"]).unwrap();
+
+        assert!(!bundled.contains("require(\"@lute/time\")"), "{bundled}");
+        assert!(!bundled.contains("require('@lute/time')"), "{bundled}");
+    }
+
+    #[test]
+    fn an_unknown_adapter_fails_the_bundle() {
+        let scratch = Scratch::new(&[("main.luau", "return 1")]);
+
+        let err = format!("{:#}", scratch.bundle_with("main.luau", &["nope"]).unwrap_err());
+
+        assert!(err.contains("unknown adapter 'nope'"), "{err}");
     }
 
     #[test]

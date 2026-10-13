@@ -14,6 +14,10 @@ export type DomRunCodeOpts = {
 	source: string?,
 	file: string?,
 	sourcemap: string?,
+	-- Run code written for another Luau runtime: its standard library requires
+	-- resolve to rodeo's implementations ("lune": @lune/*; "lute": @lute/*,
+	-- @std/*, @batteries/*). Same as `--adapter`.
+	adapters: { "lune" | "lute" }?,
 	context: ("plugin" | "server" | "client" | "mcp" | "cmdbar")?,
 	showReturn: boolean?,
 	reloadRequires: boolean?,

@@ -30,10 +30,11 @@ pub fn process(
     script: Option<String>,
     source_arg: Option<String>,
     sourcemap: Option<String>,
+    adapters: Vec<String>,
 ) -> Result<ProcessedSource> {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
-        .spawn(move || process_impl(script, source_arg, sourcemap))
+        .spawn(move || process_impl(script, source_arg, sourcemap, adapters))
         .map_err(|e| anyhow::anyhow!("failed to spawn process_source thread: {e}"))?
         .join()
         .map_err(|_| anyhow::anyhow!("process_source thread panicked"))?
@@ -43,12 +44,13 @@ fn process_impl(
     script: Option<String>,
     source_arg: Option<String>,
     sourcemap: Option<String>,
+    adapters: Vec<String>,
 ) -> Result<ProcessedSource> {
     if let Some(ref src) = source_arg {
         // Materialize inline source to a temp `.luau` file under CWD so
         // darklua's bundle pass has an anchor for relative-path require
-        // resolution. Same pipeline as file-mode: bundle (inlines fs deps)
-        // → inline_shims (resolves @rodeo/@lune) → ensure_return.
+        // resolution. Same pipeline as file-mode: bundle (inlines fs deps,
+        // @rodeo and the enabled adapters) → ensure_return.
         let tmp_path = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join(format!(".rodeo-inline-{}.luau", uuid::Uuid::new_v4()));
@@ -58,6 +60,7 @@ fn process_impl(
         let opts = bundle::BundleOptions {
             sourcemap: sourcemap.clone(),
             verbose: false,
+            adapters: adapters.clone(),
         };
         let bundle_result = bundle::bundle(tmp_path.to_str().unwrap_or(""), &opts);
         let _ = std::fs::remove_file(&tmp_path);
@@ -76,15 +79,14 @@ fn process_impl(
             }
         };
 
-        let shimmed = bundle::inline_shims(&bundled)?;
-        let script = source::ensure_return(&shimmed);
+        let script = source::ensure_return(&bundled);
         Ok(ProcessedSource {
             script,
             script_path: None,
             instance_path: None,
         })
     } else if let Some(ref file) = script {
-        // File: resolve path, bundle, shim, ensure_return, resolve instance.
+        // File: resolve path, bundle, ensure_return, resolve instance.
         // Directive parsing happens in the parent before subprocess invocation
         // (see main.rs splice phase) — clap re-parses with directive tokens
         // inlined into argv, so directives stay in lockstep with the CLI grammar.
@@ -94,12 +96,11 @@ fn process_impl(
         let opts = bundle::BundleOptions {
             sourcemap: sourcemap.clone(),
             verbose: false,
+            adapters: adapters.clone(),
         };
         let bundled = bundle::bundle(&resolved, &opts)?;
 
-        // Shim injection + ensure_return
-        let shimmed = bundle::inline_shims(&bundled)?;
-        let script = source::ensure_return(&shimmed);
+        let script = source::ensure_return(&bundled);
 
         // Instance resolution
         let script_path = Some(execution::compute_relative_path(&resolved));

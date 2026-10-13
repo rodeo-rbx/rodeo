@@ -48,7 +48,7 @@ describe("lute conformance", () => {
         const cwd = mkdtempSync(join(tmpdir(), "rodeo-lute-conformance-"));
         scratchDirs.push(cwd);
         const proc = Bun.spawnSync(
-          [RODEO, "run", join(SUITE_DIR, file), "--port", String(PORT)],
+          [RODEO, "run", join(SUITE_DIR, file), "--adapter", "lute", "--port", String(PORT)],
           { cwd, stdout: "pipe", stderr: "pipe", timeout: 90_000 },
         );
         const stdout = proc.stdout?.toString() ?? "";

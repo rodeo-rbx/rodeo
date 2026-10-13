@@ -97,6 +97,12 @@ pub enum Commands {
         #[arg(long)]
         sourcemap: Option<String>,
 
+        /// Run code written for another Luau runtime: its standard library
+        /// requires (lune: @lune/*; lute: @lute/*, @std/*, @batteries/*)
+        /// resolve to rodeo's implementations. Repeatable.
+        #[arg(long = "adapter", value_name = "ADAPTER", value_parser = adapter_parser())]
+        adapters: Vec<String>,
+
         /// Path to file for execution output (prints/logs)
         #[arg(long)]
         output: Option<String>,
@@ -369,6 +375,11 @@ impl PlaceArgs {
 /// A `--fflag.override` value must be `Key=Value`. Checked when the command
 /// parses, where a mistake fails it: the serve applies overrides at launch and
 /// could only skip a malformed one in its own log.
+/// `--adapter` accepts the adapters embedded at build time.
+fn adapter_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(crate::commands::process_source::adapters::names())
+}
+
 fn parse_fflag_override(s: &str) -> Result<String, String> {
     match s.split_once('=') {
         Some((key, _)) if !key.trim().is_empty() => Ok(s.to_string()),
