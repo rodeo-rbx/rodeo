@@ -58,6 +58,10 @@ Run a script in Studio
 
 * `-s`, `--source <SOURCE>` — Execute source code passed as string. Hyphen-leading values are legal — Luau hotcomments (`--!native`, `--!optimize 2`) start scripts, and clap would otherwise reject them as flags
 * `--sourcemap <SOURCEMAP>` — Path to sourcemap.json for instance resolution
+* `--adapter <ADAPTER>` — Run code written for another Luau runtime: its standard library requires (lune: @lune/*; lute: @lute/*, @std/*, @batteries/*) resolve to rodeo's implementations. Repeatable
+
+  Possible values: `lune`, `lute`
+
 * `--output <OUTPUT>` — Path to file for execution output (prints/logs)
 * `--return <RETURN_FILE>` — Path to file for return value JSON
 * `--show-return` — Print return value to stdout

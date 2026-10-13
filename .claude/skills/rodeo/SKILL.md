@@ -105,6 +105,7 @@ Run a script in Studio.
 - `--save [path]` — save the place after the run; a missed save is a nonzero exit, never silent. Bare `--save` opens the source file directly and saves into it; `--save <path>` saves to that path. With `--detach`, saves at run end and leaves Studio open. With `--studio-id`/`--dom-id` instead of `--place`, saves that Studio after a successful run the way `rodeo save <id> [--out <path>]` does (bare `--save`: back to its SOURCE_PATH); a failed run skips the save. With none of the three, `--save` is an error
 - `--profile [dir]` — enable microprofiler auto-capture and collect dumps (optional output directory)
 - `--sourcemap <path>` — path to sourcemap.json for instance resolution
+- `--adapter lune|lute` — run code written for another Luau runtime: its standard library requires resolve to rodeo's implementations (see "Runtime adapters"). Repeatable; directive and CLI values combine
 - `--host <host>` / `--port <port>` — server address (port resolution: the flag, then `RODEO_PORT`, then 44872)
 - `--no-output` — suppress all output
 - `--no-print` / `--no-warn` / `--no-error` / `--no-info` — suppress specific log levels
@@ -522,11 +523,23 @@ the device simulator accepts at most 7680 by 4320. The capture then waits for
 the engine with no deadline (a large frame or a slow GPU can take well over
 10s; the largest frame takes about 7s).
 
-### `@lune` adapters — run lune-flavored code unchanged
+### Runtime adapters — run lune- or lute-flavored code (`--adapter`)
 
-rodeo ships adapters that map lune's std lib onto its own runtime, so scripts
-(and dependencies) written for lune run inside Studio with rodeo's host doing
-the I/O:
+Adapters are opt-in per run: `--adapter lune`, `--adapter lute` (repeatable),
+or in the script's directive, so the script states its runtime once:
+
+```lua
+-- @rodeo run --adapter lute
+local fs = require("@std/fs")
+```
+
+The TS and Lune clients take `adapters = { "lune" }`. Without an adapter,
+`@lune/*`, `@lute/*`, `@std/*` and `@batteries/*` follow the project's
+`.luaurc` like any alias; a require nothing resolves stays in the script and
+fails only if it runs (so code with runtime-specific branches it never takes in
+Studio, like LibMP's, runs without one).
+
+`--adapter lune`:
 
 ```lua
 require("@lune/fs")       -- readFile/writeFile/isFile/isDir/readDir/remove*/writeDir/copy/move/metadata
@@ -538,22 +551,27 @@ require("@lune/task")     -- Roblox task, wait/delay clamped to lune's out-of-ra
 
 Any other member (`serde.hash`, `stdio.format`, ...) raises
 `@lune/<module>.<name> is not supported by rodeo's Lune adapter` when accessed.
+pesde packages published with a `lune` target work under rodeo bundling with
+`--adapter lune`, because their `@lune/*` imports resolve through it (the
+wally/roblox-target instance-require wall is issue #6). Prefer lune-target
+dependencies for run scripts.
 
-This also solves the wally/roblox-target package wall, where instance-path
-requires cannot bundle (issue #6): **pesde packages published with a `lune`
-target work under rodeo bundling as-is**, because their `@lune/*` imports
-resolve through these adapters. Prefer lune-target dependencies for run
-scripts.
-
-`@lute/*` adapters exist too, for lute-flavored code:
+`--adapter lute` gives `@lute/*` plus lute's own standard library (`@std/*`:
+fs, path, json, process, system, io, task, time, test, stringext, tableext)
+and `@batteries/*`:
 
 ```lua
-require("@lute/fs")       -- handle-based open/read/write/close, readIntoBuffer, stat (Duration timestamps), recursive copy/move/rmdir; link/symlink/watch error
+require("@lute/fs")       -- handle-based open/read/write/close, readIntoBuffer, stat; "w+"/"x+"/"a+" handles are write-only, "r+" and link/symlink/watch error
 require("@lute/io")       -- write(...)/read
 require("@lute/process")  -- args, env, cwd, homedir, execPath, run, system, exit; pid/onSignal error
+require("@lute/system")   -- os, arch, tmpdir, threadCount; hostName/memory/uptime/cpus error
 require("@lute/task")     -- Roblox task + resume/deferSelf; wait/delay accept @lute/time Durations
-require("@lute/time")     -- Instant/Duration with full arithmetic and comparisons (pure Luau)
+require("@lute/time")     -- Instant/Duration as lute's (whole nanoseconds, arithmetic, comparisons, tostring)
 ```
+
+`@lute/crypto`, `debugger`, `luau`, `net`, `syntax` and `vm` (and the `@std`
+modules built on them: `@std/luau`, `@std/net`, `@std/syntax`) error when
+required. `process.execPath()` is the rodeo CLI, not lute.
 
 ## Common patterns
 
