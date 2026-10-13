@@ -126,6 +126,14 @@ jobs:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Allow long paths in git checkouts (Windows)
+        # Cargo checks git dependencies out with libgit2, which refuses paths
+        # over 260 characters on Windows unless core.longpaths is set, and
+        # darklua's test snapshots (src/generator/snapshots) are longer than
+        # that under Cargo's checkout directory.
+        if: matrix.os == 'windows-latest'
+        run: git config --global core.longpaths true
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
