@@ -226,7 +226,9 @@ pub enum Commands {
         server: ServerArgs,
     },
 
-    /// Generate type definitions and configure .luaurc
+    /// Generate type definitions, configure .luaurc, and install the rodeo
+    /// skill into the project's .claude/skills and .agents/skills folders (those
+    /// that exist), replacing a copy for an older rodeo
     Setup,
 
 

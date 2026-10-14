@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runRodeo } from "../cli/helpers.js";
 
@@ -71,5 +71,70 @@ describe("rodeo setup", () => {
 
     expect(r.ok).toBe(true);
     expect(r.stdout + r.stderr).toContain("table");
+  });
+});
+
+// The skill `setup` installs: this repo's, which the binary under test embeds.
+const SKILL = readFileSync(join(import.meta.dir, "..", "..", ".claude", "skills", "rodeo", "SKILL.md"), "utf8");
+const VERSION = /\n  version: (\S+)\n/.exec(SKILL)![1];
+
+function skillFor(version: string): string {
+  return `---\nname: rodeo\nmetadata:\n  version: ${version}\n---\n\n# an edited copy\n`;
+}
+
+// `rodeo setup` in a scratch project laid out by `prepare`.
+function setupIn(prepare: (dir: string) => void): { dir: string; stderr: string; exitCode: number | null } {
+  const dir = mkdtempSync(join(tmpdir(), "rodeo-setup-skill-"));
+  prepare(dir);
+  const proc = Bun.spawnSync(["rodeo", "setup"], { cwd: dir });
+  return { dir, stderr: proc.stderr.toString(), exitCode: proc.exitCode };
+}
+
+describe("rodeo setup: the agent skill", () => {
+  it("installs into the skill folders the project has, and creates none", () => {
+    const r = setupIn((dir) => mkdirSync(join(dir, ".claude", "skills"), { recursive: true }));
+    try {
+      expect(r.exitCode, r.stderr).toBe(0);
+      expect(readFileSync(join(r.dir, ".claude", "skills", "rodeo", "SKILL.md"), "utf8")).toBe(SKILL);
+      expect(existsSync(join(r.dir, ".agents"))).toBe(false);
+      expect(r.stderr).toContain("Installed the rodeo skill to .claude/skills/rodeo/SKILL.md");
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces a copy for an older rodeo and keeps one for this or a newer rodeo", () => {
+    const r = setupIn((dir) => {
+      for (const [folder, copy] of [
+        [".agents", skillFor("1.3.0")],
+        [".claude", skillFor(VERSION)],
+      ]) {
+        mkdirSync(join(dir, folder, "skills", "rodeo"), { recursive: true });
+        writeFileSync(join(dir, folder, "skills", "rodeo", "SKILL.md"), copy);
+      }
+    });
+    try {
+      expect(r.exitCode, r.stderr).toBe(0);
+      expect(readFileSync(join(r.dir, ".agents", "skills", "rodeo", "SKILL.md"), "utf8")).toBe(SKILL);
+      expect(r.stderr).toContain(`Updated the rodeo skill in .agents/skills/rodeo/SKILL.md (1.3.0 → ${VERSION})`);
+      expect(readFileSync(join(r.dir, ".claude", "skills", "rodeo", "SKILL.md"), "utf8")).toBe(skillFor(VERSION));
+      expect(r.stderr).toContain("The rodeo skill in .claude/skills/rodeo/SKILL.md is up to date");
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a copy for a newer rodeo", () => {
+    const r = setupIn((dir) => {
+      mkdirSync(join(dir, ".claude", "skills", "rodeo"), { recursive: true });
+      writeFileSync(join(dir, ".claude", "skills", "rodeo", "SKILL.md"), skillFor("99.0.0"));
+    });
+    try {
+      expect(r.exitCode, r.stderr).toBe(0);
+      expect(readFileSync(join(r.dir, ".claude", "skills", "rodeo", "SKILL.md"), "utf8")).toBe(skillFor("99.0.0"));
+      expect(r.stderr).toContain("it's for rodeo 99.0.0, newer than this one");
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
   });
 });

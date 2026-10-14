@@ -258,7 +258,9 @@ Two consequences decide which mode you need:
 
 ## `@rodeo` API
 
-Run `rodeo setup` once per project to generate types and `.luaurc`.
+Run `rodeo setup` once per project to generate types and `.luaurc`. It also
+installs this skill into the project's `.claude/skills` and `.agents/skills`
+folders (those that exist), replacing a copy for an older rodeo.
 
 ```lua
 local rodeo = require("@rodeo")         -- full API

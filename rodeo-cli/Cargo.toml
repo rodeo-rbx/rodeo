@@ -87,6 +87,8 @@ anyhow = "1"
 
 dirs = "5"
 regex = "1"
+# Comparing the skill copy a project has with this build's (`rodeo setup`).
+semver = "1"
 base64 = "0.22"
 bytes = "1"
 pathdiff = "0.2"

@@ -39,3 +39,5 @@ rodeo setup
 ```
 
 Writes `@rodeo` typedefs to `~/.rodeo/typedefs/<version>/` and registers them in `.rodeo/.luaurc` so your editor can type-check `require("@rodeo/fs")` etc.
+
+If the project has a `.claude/skills` or `.agents/skills` folder, `setup` also installs the rodeo agent skill there as `rodeo/SKILL.md`. A copy for an older rodeo is replaced; one for the same or a newer rodeo is left as it is.

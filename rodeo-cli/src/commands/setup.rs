@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static TYPEDEF_INIT: &str = include_str!("../../../rodeo-pkg/rodeo/src/init.luau");
 static TYPEDEF_FS: &str = include_str!("../../../rodeo-pkg/rodeo/src/fs.luau");
@@ -18,6 +18,14 @@ static TYPEDEFS: [(&str, &str); 7] = [
     ("roblox.luau", TYPEDEF_ROBLOX),
     ("_internal/singleton.luau", TYPEDEF_INTERNAL_SINGLETON),
 ];
+
+/// The rodeo skill, as of this build (the build checks its version stamps
+/// match the crate's).
+static SKILL: &str = include_str!("../../../.claude/skills/rodeo/SKILL.md");
+
+/// Where agents look for a project's skills. `setup` installs the rodeo skill
+/// into each of these the project already has, and creates none.
+const SKILL_DIRS: [&str; 2] = [".claude/skills", ".agents/skills"];
 
 pub fn main() -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
@@ -80,5 +88,139 @@ pub fn main() -> Result<()> {
 
     tracing::info!("Updated {}", luaurc_path.display());
 
+    let version = semver::Version::parse(version).context("the crate version is not semver")?;
+    for dir in SKILL_DIRS {
+        install_skill(Path::new(dir), &version)?;
+    }
+
     Ok(())
+}
+
+/// What `setup` does with a project's copy of the skill.
+#[derive(Debug, PartialEq)]
+enum SkillAction {
+    /// There's no copy yet.
+    Install,
+    /// The copy is for an older rodeo (or says for none: it predates the
+    /// stamp), so this build's replaces it.
+    Update { from: Option<String> },
+    /// The copy is for this rodeo or a newer one, so it stays.
+    Keep { newer: Option<String> },
+}
+
+fn skill_action(existing: Option<&str>, version: &semver::Version) -> SkillAction {
+    let Some(existing) = existing else {
+        return SkillAction::Install;
+    };
+    let Some(stamp) = skill_version(existing) else {
+        return SkillAction::Update { from: None };
+    };
+    match semver::Version::parse(&stamp) {
+        Ok(theirs) if theirs > *version => SkillAction::Keep { newer: Some(stamp) },
+        Ok(theirs) if theirs == *version => SkillAction::Keep { newer: None },
+        _ => SkillAction::Update { from: Some(stamp) },
+    }
+}
+
+/// The `metadata.version` a skill file's frontmatter carries.
+fn skill_version(skill: &str) -> Option<String> {
+    let frontmatter = skill.strip_prefix("---")?;
+    let end = frontmatter.find("\n---")?;
+    frontmatter[..end]
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("version:").map(|v| v.trim().to_string()))
+}
+
+/// Installs the skill as `<dir>/rodeo/SKILL.md` if `dir` exists.
+fn install_skill(dir: &Path, version: &semver::Version) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let path = dir.join("rodeo").join("SKILL.md");
+    // Forward slashes on every platform, as the folder was named.
+    let shown = format!("{}/rodeo/SKILL.md", dir.to_string_lossy().replace('\\', "/"));
+    let existing = std::fs::read_to_string(&path).ok();
+    let action = skill_action(existing.as_deref(), version);
+    match &action {
+        SkillAction::Keep { newer: None } => {
+            tracing::info!("The rodeo skill in {shown} is up to date");
+            return Ok(());
+        }
+        SkillAction::Keep { newer: Some(theirs) } => {
+            tracing::info!("Left the rodeo skill in {shown} as it is: it's for rodeo {theirs}, newer than this one ({version})");
+            return Ok(());
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(path.parent().expect("has a parent"))
+        .with_context(|| format!("failed to create the folder for {shown}"))?;
+    std::fs::write(&path, SKILL).with_context(|| format!("failed to write {shown}"))?;
+    match action {
+        SkillAction::Update { from: Some(old) } => tracing::info!("Updated the rodeo skill in {shown} ({old} → {version})"),
+        SkillAction::Update { from: None } => tracing::info!("Updated the rodeo skill in {shown} (an unversioned copy → {version})"),
+        _ => tracing::info!("Installed the rodeo skill to {shown}"),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(s: &str) -> semver::Version {
+        semver::Version::parse(s).unwrap()
+    }
+
+    fn skill_for(version: &str) -> String {
+        format!("---\nname: rodeo\nmetadata:\n  version: {version}\n---\n\n# rodeo\n")
+    }
+
+    #[test]
+    fn the_embedded_skill_is_for_this_build() {
+        assert_eq!(skill_version(SKILL).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn reads_the_frontmatter_version() {
+        assert_eq!(skill_version(&skill_for("1.5.0-rc.14")).as_deref(), Some("1.5.0-rc.14"));
+        assert_eq!(skill_version("---\r\nmetadata:\r\n  version: 1.3.0\r\n---\r\n").as_deref(), Some("1.3.0"));
+        assert_eq!(skill_version("---\nname: rodeo\n---\nversion: 2.0.0\n"), None);
+        assert_eq!(skill_version("# rodeo\n"), None);
+    }
+
+    #[test]
+    fn replaces_only_an_older_or_unversioned_copy() {
+        let this = v("1.5.0-rc.15");
+        assert_eq!(skill_action(None, &this), SkillAction::Install);
+        assert_eq!(skill_action(Some("# rodeo\n"), &this), SkillAction::Update { from: None });
+        assert_eq!(
+            skill_action(Some(&skill_for("1.3.0")), &this),
+            SkillAction::Update { from: Some("1.3.0".into()) }
+        );
+        assert_eq!(
+            skill_action(Some(&skill_for("1.5.0-rc.14")), &this),
+            SkillAction::Update { from: Some("1.5.0-rc.14".into()) }
+        );
+        assert_eq!(skill_action(Some(&skill_for("1.5.0-rc.15")), &this), SkillAction::Keep { newer: None });
+        assert_eq!(
+            skill_action(Some(&skill_for("1.5.0")), &this),
+            SkillAction::Keep { newer: Some("1.5.0".into()) }
+        );
+    }
+
+    #[test]
+    fn installs_only_into_existing_skill_folders() {
+        let root = std::env::temp_dir().join(format!("rodeo-setup-skill-{}", uuid::Uuid::new_v4()));
+        let claude = root.join(".claude").join("skills");
+        let agents = root.join(".agents").join("skills");
+        std::fs::create_dir_all(&claude).unwrap();
+        let this = v(env!("CARGO_PKG_VERSION"));
+
+        install_skill(&claude, &this).unwrap();
+        install_skill(&agents, &this).unwrap();
+
+        assert_eq!(std::fs::read_to_string(claude.join("rodeo").join("SKILL.md")).unwrap(), SKILL);
+        assert!(!root.join(".agents").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

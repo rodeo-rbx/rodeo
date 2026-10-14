@@ -16,7 +16,7 @@ Command-line interface for Roblox Studio
 * `state` — Show the canonical rodeo state: studios, their DOMs, and runs
 * `kill` — Kill a run or close a Studio by id
 * `save` — Save the Studio place
-* `setup` — Generate type definitions and configure .luaurc
+* `setup` — Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo
 
 ###### **Options:**
 
@@ -167,7 +167,7 @@ Save the Studio place
 
 ## `rodeo setup`
 
-Generate type definitions and configure .luaurc
+Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo
 
 **Usage:** `rodeo setup`
 
