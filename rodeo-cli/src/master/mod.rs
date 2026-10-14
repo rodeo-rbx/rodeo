@@ -261,7 +261,7 @@ pub struct MasterState {
     /// can't serve as the routing key.
     pub pending_saves: HashMap<String, tokio::sync::oneshot::Sender<rodeo_proto::SaveResult>>,
     /// Declarative per-studio target as last pushed, keyed by studio (see
-    /// `studio_key`). Re-pushed to every DOM of the studio whenever the
+    /// `StudioIds::key`). Re-pushed to every DOM of the studio whenever the
     /// target or the studio's DOM set changes: a DOM that just connected
     /// (e.g. the server DOM of a session the target has to end) learns the
     /// target that way. The plugin ignores an unchanged target.
@@ -283,17 +283,59 @@ pub struct StudioTarget {
     pub doms: Vec<String>,
 }
 
-/// The studio a DOM belongs to, as the master groups them for targets and
-/// routing: the canonical studio_id, else the launch session_guid, else the
-/// DOM's own id (a lone DOM before its studio id lands).
-fn studio_key(dom: &rodeo_proto::DomSnapshot) -> String {
-    let non_empty = |s: &Option<String>| s.clone().filter(|v| !v.is_empty());
-    non_empty(&dom.studio_id)
-        .or_else(|| non_empty(&dom.session_guid))
-        .unwrap_or_else(|| dom.dom_id.clone())
+fn non_empty(s: &Option<String>) -> Option<&str> {
+    s.as_deref().filter(|v| !v.is_empty())
 }
 
-/// Connected DOMs grouped into studios (by `studio_key`).
+/// The canonical studio_id of every launch session, as its DOMs report it.
+///
+/// A play DOM's plugin takes its studio_id from its clone of the edit DOM's
+/// Workspace attribute, which is not always there yet when it loads. Until it
+/// is, the DOM reports only its launch session_guid, which ties it to the
+/// studio its edit DOM names. Grouping and routing both resolve DOMs through
+/// this, so that a `--studio-id` run and `rodeo state` see the same studio.
+struct StudioIds {
+    by_session: HashMap<String, String>,
+}
+
+impl StudioIds {
+    fn of<'a>(doms: impl IntoIterator<Item = &'a rodeo_proto::DomSnapshot>) -> Self {
+        let mut by_session = HashMap::new();
+        for dom in doms {
+            if !dom.connected {
+                continue;
+            }
+            if let (Some(session), Some(studio)) = (non_empty(&dom.session_guid), non_empty(&dom.studio_id)) {
+                by_session.entry(session.to_string()).or_insert_with(|| studio.to_string());
+            }
+        }
+        Self { by_session }
+    }
+
+    /// The DOM's canonical studio_id: its own, else its launch session's.
+    fn studio_id<'a>(&'a self, dom: &'a rodeo_proto::DomSnapshot) -> Option<&'a str> {
+        non_empty(&dom.studio_id)
+            .or_else(|| non_empty(&dom.session_guid).and_then(|s| self.by_session.get(s)).map(String::as_str))
+    }
+
+    /// Does the DOM belong to the studio a run's session filter names (a
+    /// launch session_guid or a canonical studio_id)?
+    fn matches(&self, dom: &rodeo_proto::DomSnapshot, wanted: &str) -> bool {
+        non_empty(&dom.session_guid) == Some(wanted) || self.studio_id(dom) == Some(wanted)
+    }
+
+    /// The studio a DOM belongs to, as the master groups them for targets
+    /// and routing: the canonical studio_id, else the launch session_guid,
+    /// else the DOM's own id (a lone DOM before its studio id lands).
+    fn key(&self, dom: &rodeo_proto::DomSnapshot) -> String {
+        self.studio_id(dom)
+            .or_else(|| non_empty(&dom.session_guid))
+            .unwrap_or(&dom.dom_id)
+            .to_string()
+    }
+}
+
+/// Connected DOMs grouped into studios (by `StudioIds::key`).
 struct StudioIndex {
     groups: HashMap<String, Vec<rodeo_proto::DomSnapshot>>,
     /// Every identifier a run's `session` filter may carry — a launch
@@ -378,18 +420,17 @@ impl MasterState {
     /// Group the connected DOMs of every backend into studios.
     fn studio_index(&self) -> StudioIndex {
         let mut index = StudioIndex { groups: HashMap::new(), ident_to_group: HashMap::new() };
-        for backend in self.backends.values() {
-            let snap = backend.state_rx.borrow();
-            for dom in &snap.doms {
-                if !dom.connected { continue; }
-                let key = studio_key(dom);
-                for ident in [&dom.studio_id, &dom.session_guid].into_iter().flatten() {
-                    if !ident.is_empty() {
-                        index.ident_to_group.insert(ident.clone(), key.clone());
-                    }
-                }
-                index.groups.entry(key).or_default().push(dom.clone());
+        let doms: Vec<rodeo_proto::DomSnapshot> = self.backends.values()
+            .flat_map(|backend| backend.state_rx.borrow().doms.clone())
+            .filter(|dom| dom.connected)
+            .collect();
+        let ids = StudioIds::of(&doms);
+        for dom in doms {
+            let key = ids.key(&dom);
+            for ident in [ids.studio_id(&dom), non_empty(&dom.session_guid)].into_iter().flatten() {
+                index.ident_to_group.insert(ident.to_string(), key.clone());
             }
+            index.groups.entry(key).or_default().push(dom);
         }
         index
     }
@@ -506,6 +547,7 @@ impl MasterState {
         };
 
         let all_doms = self.all_doms();
+        let ids = StudioIds::of(all_doms.iter().map(|(_, d)| d));
         let mut best: Option<(String, usize)> = None;
 
         // An explicit `--mode edit` asks for the studio to be in edit, not
@@ -516,7 +558,7 @@ impl MasterState {
             if run.route.mode == Some(crate::shared::target::StudioMode::Edit) {
                 all_doms.iter()
                     .filter(|(_, d)| d.connected && matches!(d.dom_kind.as_deref(), Some("server") | Some("client")))
-                    .map(|(_, d)| studio_key(d))
+                    .map(|(_, d)| ids.key(d))
                     .collect()
             } else {
                 std::collections::HashSet::new()
@@ -526,7 +568,7 @@ impl MasterState {
             if !dom.connected {
                 continue;
             }
-            if studios_in_session.contains(&studio_key(dom)) {
+            if studios_in_session.contains(&ids.key(dom)) {
                 continue;
             }
 
@@ -534,9 +576,7 @@ impl MasterState {
             // find_match_for_run: a session-pinned default-route run must not
             // route into another session's DOMs.
             if let Some(ref wanted) = run.session {
-                let matches = dom.session_guid.as_deref() == Some(wanted.as_str())
-                    || dom.studio_id.as_deref() == Some(wanted.as_str());
-                if !matches {
+                if !ids.matches(dom, wanted) {
                     continue;
                 }
             }
@@ -767,18 +807,14 @@ impl MasterState {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let all_doms = self.all_doms();
+        let ids = StudioIds::of(all_doms.iter().map(|(_, d)| d));
         for scope_session in targeted_sessions {
             // Alive = some connected DOM matches the filter either way — the
-            // same test routing applies (`matches_studio`). Checking only the
-            // session_guid killed every `--studio-id` run that had to wait for
-            // a mode transition, silently, on the next notify tick.
-            let alive = self.backends.values().any(|b| {
-                b.state_rx.borrow().doms.iter().any(|v| {
-                    v.connected
-                        && (v.session_guid.as_deref() == Some(scope_session.as_str())
-                            || v.studio_id.as_deref() == Some(scope_session.as_str()))
-                })
-            });
+            // same test routing applies (`StudioIds::matches`). Checking only
+            // the session_guid killed every `--studio-id` run that had to wait
+            // for a mode transition, silently, on the next notify tick.
+            let alive = all_doms.iter().any(|(_, v)| v.connected && ids.matches(v, &scope_session));
             if alive {
                 continue;
             }
@@ -814,7 +850,7 @@ impl MasterState {
     pub fn derive_and_push_targets(&mut self) {
         use crate::shared::target::{DomKind, StudioMode};
         // Studios are grouped by studio_id > session_guid > dom_id (see
-        // studio_key). A run's session filter — a launch session_guid or a
+        // StudioIds::key). A run's session filter — a launch session_guid or a
         // canonical studio_id — resolves to its studio, so both an owned
         // launch pin and a `--studio-id` run drive the right studio.
         // Session-less/id-less DOMs (a hand-opened Studio before its state
@@ -1163,6 +1199,7 @@ fn build_studios(
     // BTreeMap for a stable, deterministic studio ordering across snapshots.
     let mut groups: std::collections::BTreeMap<String, Vec<&rodeo_proto::DomSnapshot>> =
         std::collections::BTreeMap::new();
+    let ids = StudioIds::of(doms);
     for dom in doms {
         if !dom.connected {
             continue;
@@ -1172,11 +1209,10 @@ fn build_studios(
         // edit DOM the same as an owned studio's do. Fall back to the launch
         // session_guid (available at connect before the first state message),
         // then to the dom id (a lone id-less DOM).
-        let key = dom
-            .studio_id
-            .clone()
-            .filter(|s| !s.is_empty())
-            .or_else(|| dom.session_guid.clone())
+        let key = ids
+            .studio_id(dom)
+            .or_else(|| non_empty(&dom.session_guid))
+            .map(str::to_string)
             .unwrap_or_else(|| format!("dom:{}", dom.dom_id));
         groups.entry(key).or_default().push(dom);
     }
@@ -1805,6 +1841,73 @@ mod tests {
         state.reconcile();
         assert_eq!(drain(&mut backend_rx), vec![target("edit", "", 0), target("server", "", 0)]);
         assert!(state.explicit_targets.is_empty());
+    }
+
+    /// A play DOM whose plugin hasn't picked up its studio's id: it reports
+    /// only its launch session.
+    fn id_less_dom(dom_id: &str, kind: &str, mode: &str, session: &str) -> rodeo_proto::DomSnapshot {
+        rodeo_proto::DomSnapshot {
+            dom_id: dom_id.to_string(),
+            mode: Some(mode.to_string()),
+            dom_kind: Some(kind.to_string()),
+            session_guid: Some(session.to_string()),
+            connected: true,
+            ..Default::default()
+        }
+    }
+
+    fn edit_dom_of(studio: &str, session: &str) -> rodeo_proto::DomSnapshot {
+        let mut edit = dom("edit", "edit", "edit", studio);
+        edit.session_guid = Some(session.to_string());
+        edit
+    }
+
+    // A play DOM's plugin can load before its clone of the edit DOM's studio
+    // id attribute is visible. Its DOMs still belong to the studio their
+    // session's edit DOM names: a `--studio-id` run waiting on the test used
+    // to stay queued, while the play DOMs formed a studio of their own.
+    #[test]
+    fn play_doms_without_their_studio_id_join_their_sessions_studio() {
+        let (mut state, mut backend_rx) = state_with_doms(vec![edit_dom_of("S", "sess-S")]);
+        let (run, _client_rx) = queued_run_for("r-server", route(Some(StudioMode::Test), None, Some(RunContext::Server)), Some("S"), 1.0);
+        assert!(!state.route_or_queue(run));
+        assert_eq!(drain(&mut backend_rx), vec![target("edit", "test", 0)]);
+
+        let doms = vec![
+            edit_dom_of("S", "sess-S"),
+            id_less_dom("server", "server", "test", "sess-S"),
+            id_less_dom("client", "client", "test", "sess-S"),
+        ];
+        set_doms(&state, doms.clone());
+        state.reconcile();
+        assert_eq!(
+            drain(&mut backend_rx),
+            vec![
+                target("client", "", 0),
+                target("edit", "", 0),
+                target("server", "", 0),
+                Sent::Run("server".to_string(), "r-server".to_string()),
+            ],
+        );
+        assert_eq!(state.target_modes.keys().collect::<Vec<_>>(), vec!["S"]);
+
+        let studios = build_studios(&doms, &Default::default());
+        assert_eq!(studios.len(), 1, "one studio in state");
+        assert_eq!((studios[0].studio_id.as_str(), studios[0].studio_mode.as_str()), ("S", "test"));
+        assert_eq!(studios[0].doms.len(), 3);
+    }
+
+    // `--mode edit` waits for the studio's session to end, id-less play DOMs
+    // included: it used to run on the edit DOM while the test went on.
+    #[test]
+    fn explicit_edit_mode_waits_for_play_doms_without_their_studio_id() {
+        let (mut state, mut backend_rx) = state_with_doms(vec![
+            edit_dom_of("S", "sess-S"),
+            id_less_dom("server", "server", "test", "sess-S"),
+        ]);
+        let (run, _client_rx) = queued_run_for("r-edit", route(Some(StudioMode::Edit), None, None), Some("S"), 1.0);
+        assert!(!state.route_or_queue(run), "held while the studio is in a session");
+        assert_eq!(drain(&mut backend_rx), vec![target("edit", "edit", 0), target("server", "edit", 0)]);
     }
 
     #[test]

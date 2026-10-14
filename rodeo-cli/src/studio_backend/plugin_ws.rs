@@ -202,8 +202,8 @@ pub async fn handle_studio_client<S, R>(
     let initial_mode = initial_state.as_ref().map(|s| if s.mode.is_empty() { "?" } else { s.mode.as_str() }).unwrap_or("?");
     let initial_mcp_studio_id = initial_state.as_ref().and_then(|s| s.mcp_studio_id.as_deref()).unwrap_or("none");
     // The identities master groups this DOM's studio by (see master's
-    // `studio_key`): a play DOM reporting none of its edit DOM's is a studio
-    // of its own, and runs pinned to the edit DOM's studio never reach it.
+    // `StudioIds`): a play DOM without its studio_id belongs to the studio
+    // through its launch session alone.
     let initial_studio_id = initial_state.as_ref().map(|s| s.studio_id.as_str()).filter(|s| !s.is_empty()).unwrap_or("none");
     let initial_session = initial_state.as_ref().and_then(|s| s.session_guid.as_deref()).unwrap_or("none");
     info!(
