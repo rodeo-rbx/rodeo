@@ -8,10 +8,9 @@
 // property whose content is lost; an export without such content is quiet.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { cliStudioHandle, killLaunchedStudios } from "../cli/helpers.js";
+import { tempPath } from "../utils/paths.js";
 
 const PORT = 47532;
 // Studios this file launches are reaped by session, never by pattern.
@@ -19,7 +18,7 @@ const STARTED = Date.now();
 const files: string[] = [];
 
 function tmpModel(): string {
-  const path = join(tmpdir(), `rodeo-repro-export-${randomUUID()}.rbxm`);
+  const path = tempPath(`rodeo-repro-export-${randomUUID()}.rbxm`);
   files.push(path);
   return path;
 }

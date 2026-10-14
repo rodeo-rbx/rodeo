@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { RunCodeOpts, RunResult } from "../../rodeo-client-ts/src/run.js";
 import { writeMinimalGlb } from "./glb.js";
+import { tempPath } from "./paths.js";
 import { countPixels, decodePng } from "./png.js";
 
 export type RunFn = (opts: RunCodeOpts) => Promise<RunResult>;
@@ -1354,7 +1355,7 @@ export function roblox(run: RunFn): void {
   // rather than round-tripping it through the return value. Absolute paths
   // keep the script's fs cwd and the test process in agreement.
   it("roblox: bake emits Roblox types as constructors", async () => {
-    const out = "/tmp/rodeo-test-bake-types.luau";
+    const out = tempPath("rodeo-test-bake-types.luau");
     rmrf(out);
     const result = await run({
       source: `local roblox = require("@rodeo/roblox")
@@ -1382,7 +1383,7 @@ export function roblox(run: RunFn): void {
   // The enum must be emitted UNQUOTED — a quoted "Enum.Material.Plastic" is a
   // lookalike string that silently fails to round-trip as an EnumItem.
   it("roblox: bake emits enums unquoted", async () => {
-    const out = "/tmp/rodeo-test-bake-enum.luau";
+    const out = tempPath("rodeo-test-bake-enum.luau");
     rmrf(out);
     const result = await run({
       source: `local roblox = require("@rodeo/roblox")
@@ -1404,7 +1405,7 @@ export function roblox(run: RunFn): void {
       ["vector", "Vector3.new(1, 2, 3)", "return vector.create(1, 2, 3)\n"],
     ];
     for (const [label, literal, expected] of cases) {
-      const out = `/tmp/rodeo-test-bake-scalar-${label}.luau`;
+      const out = tempPath(`rodeo-test-bake-scalar-${label}.luau`);
       rmrf(out);
       const result = await run({
         source: `local roblox = require("@rodeo/roblox")
@@ -1418,7 +1419,7 @@ export function roblox(run: RunFn): void {
   });
 
   it("roblox: bake creates parent directories", async () => {
-    const dir = "/tmp/rodeo-test-bake-nested";
+    const dir = tempPath("rodeo-test-bake-nested");
     rmrf(dir);
     const result = await run({
       source: `local roblox = require("@rodeo/roblox")
@@ -1431,7 +1432,7 @@ export function roblox(run: RunFn): void {
   });
 
   it("roblox: bake stringifies instances", async () => {
-    const out = "/tmp/rodeo-test-bake-instance.luau";
+    const out = tempPath("rodeo-test-bake-instance.luau");
     rmrf(out);
     const result = await run({
       source: `local roblox = require("@rodeo/roblox")

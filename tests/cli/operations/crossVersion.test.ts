@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killLaunchedStudios, pluginFileFor, pluginsDir, removeKeptPluginFile, runRodeo, waitUntil } from "../helpers.js";
+import { killLaunchedStudios, killTree, pluginFileFor, pluginsDir, removeKeptPluginFile, runRodeo, waitUntil } from "../helpers.js";
 
 // Two rodeo versions side by side, run the way projects run them: each
 // fixture directory pins its rodeo (and port) in its own `.mise.toml`.
@@ -124,7 +124,8 @@ describe.skipIf(!mise)("two rodeo versions side by side (CLI)", () => {
         expect((treeState.studios ?? []).map((s) => s.studioId)).not.toContain(prevOwned[0]);
         expect((prevState.studios ?? []).map((s) => s.studioId)).not.toContain(treeOwned[0]);
       } finally {
-        tree.kill();
+        // `tree` is mise, running the tree build's rodeo.
+        killTree(tree);
         await tree.exited;
         removeKeptPluginFile(TREE_PORT);
       }

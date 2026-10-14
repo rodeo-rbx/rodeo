@@ -12,7 +12,7 @@ import { describe, beforeAll, afterAll, it, expect } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cliStudioHandle, killLaunchedStudios, runRodeo } from "../cli/helpers.js";
+import { cliStudioHandle, killLaunchedStudios, runRodeo, stopServe } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const PORT = 47544;
@@ -60,8 +60,7 @@ describe("runs under NextGenerationReplication (issue #32)", () => {
   });
   afterAll(async () => {
     await cli.close();
-    Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
-    Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
+    stopServe(PORT);
     killLaunchedStudios(PORT, STARTED);
     rmSync(DIR, { recursive: true, force: true });
   });

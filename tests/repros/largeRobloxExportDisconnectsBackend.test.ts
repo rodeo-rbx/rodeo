@@ -21,15 +21,16 @@
 import { test, expect, afterAll } from "bun:test";
 import { existsSync, rmSync } from "fs";
 import { join } from "path";
-import { killLaunchedStudios } from "../cli/helpers.js";
+import { killLaunchedStudios, stopServe } from "../cli/helpers.js";
+import { tempPath } from "../utils/paths.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
 // Studios this file launches are reaped by session, never by pattern.
 const STARTED = Date.now();
 const RODEO = join(ROOT, "bin", "rodeo");
 const PORT = 47342;
-const CONTROL_OUTPUT = "/tmp/rodeo-large-export-control.rbxm";
-const OUTPUT = "/tmp/rodeo-large-export-repro.rbxm";
+const CONTROL_OUTPUT = tempPath("rodeo-large-export-control.rbxm");
+const OUTPUT = tempPath("rodeo-large-export-repro.rbxm");
 
 const procs: Bun.Subprocess[] = [];
 
@@ -37,8 +38,7 @@ function cleanup() {
   for (const p of procs) {
     try { p.kill(9); } catch {}
   }
-  Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
-  Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
+  stopServe(PORT);
   killLaunchedStudios(PORT, STARTED);
   try { rmSync(CONTROL_OUTPUT, { force: true }); } catch {}
   try { rmSync(OUTPUT, { force: true }); } catch {}

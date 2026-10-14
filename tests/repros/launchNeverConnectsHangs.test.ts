@@ -9,8 +9,8 @@
 // here with RODEO_LAUNCH_TIMEOUT), the run exits non-zero naming the timeout,
 // and the launched Studio is closed.
 import { test, expect, afterAll } from "bun:test";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { pluginFileFor, waitForHealthy, waitUntil } from "../cli/helpers.js";
+import { existsSync, unlinkSync } from "node:fs";
+import { launchedSessions, pluginFileFor, processMatches, waitForHealthy, waitUntil } from "../cli/helpers.js";
 
 const PORT = 46350;
 const LAUNCH_TIMEOUT_S = 20;
@@ -38,19 +38,15 @@ function backendRegistered(): boolean {
   return r.exitCode === 0 && (JSON.parse(r.stdout.toString()).backends?.length ?? 0) > 0;
 }
 
-// `rodeo state` lists a Studio only once its plugin connects, so find the one
-// this serve launched by its RunScript bootstrap, which stamps the port.
-function launchedSession(): string | undefined {
-  const ps = Bun.spawnSync(["ps", "-axo", "command="]).stdout.toString();
-  for (const line of ps.split("\n")) {
-    const m = /-runScriptFile (\S+rodeo-bootstrap-([0-9a-f-]+)\.luau)/.exec(line);
-    if (m && existsSync(m[1]) && readFileSync(m[1], "utf8").includes(`"rodeoPort", ${PORT + 1})`)) return m[2];
-  }
-  return undefined;
+function studioRunning(session: string): boolean {
+  return processMatches(`rodeo-bootstrap-${session}`);
 }
 
-function studioRunning(session: string): boolean {
-  return Bun.spawnSync(["pgrep", "-f", `rodeo-bootstrap-${session}`]).exitCode === 0;
+// `rodeo state` lists a Studio only once its plugin connects, so find the one
+// this serve launched by its RunScript bootstrap, which stamps the port, and
+// that a running Studio names on its command line.
+function launchedSession(sinceMs: number): string | undefined {
+  return launchedSessions(PORT, sinceMs).find(studioRunning);
 }
 
 test("a launched Studio that never connects fails the run instead of hanging", async () => {
@@ -66,7 +62,7 @@ test("a launched Studio that never connects fails the run instead of hanging", a
   const run = spawnRodeo(["run", "--port", String(PORT), "--place", "--source", "return true"], true);
 
   let session: string | undefined;
-  await waitUntil(() => (session = launchedSession()) !== undefined, 30_000, "the launched Studio to appear");
+  await waitUntil(() => (session = launchedSession(started)) !== undefined, 30_000, "the launched Studio to appear");
   console.log(`launched Studio session ${session}`);
   expect(studioRunning(session!)).toBe(true);
 

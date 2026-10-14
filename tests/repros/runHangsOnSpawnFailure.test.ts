@@ -7,6 +7,8 @@
 // non-zero promptly.
 import { test, expect, afterAll } from "bun:test";
 import { join } from "path";
+import { stopServe } from "../cli/helpers.js";
+import { tempPath } from "../utils/paths.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const RODEO = join(ROOT, "bin", "rodeo");
@@ -20,12 +22,11 @@ afterAll(() => {
   }
   // Reap serve children the killed client may leave behind (see
   // killedRunLeaksServe repro) so this repro never poisons later runs.
-  Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
-  Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
+  stopServe(PORT);
 });
 
 test("run exits promptly when Studio spawn fails (invalid place file)", async () => {
-  const badPlace = "/tmp/rodeo-repro-bad-place.rbxl";
+  const badPlace = tempPath("rodeo-repro-bad-place.rbxl");
   await Bun.write(badPlace, "this is not a binary place file");
 
   const proc = Bun.spawn(

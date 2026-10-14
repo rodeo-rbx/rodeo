@@ -7,7 +7,7 @@
 // whether that binding actually works, for both SIGTERM and SIGKILL.
 import { test, expect, afterAll } from "bun:test";
 import { join } from "path";
-import { killLaunchedStudios } from "../cli/helpers.js";
+import { killLaunchedStudios, processMatches, stopServe } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
 // Studios this file launches are reaped by session, never by pattern.
@@ -17,8 +17,7 @@ const RODEO = join(ROOT, "bin", "rodeo");
 const procs: Bun.Subprocess[] = [];
 
 function serveAlive(port: number): boolean {
-  const r = Bun.spawnSync(["pgrep", "-f", `__master --port ${port}`]);
-  return r.exitCode === 0;
+  return processMatches(`__master --port ${port}`);
 }
 
 async function waitForServe(port: number, timeoutMs: number): Promise<boolean> {
@@ -35,8 +34,7 @@ async function waitForServe(port: number, timeoutMs: number): Promise<boolean> {
 }
 
 function cleanup(port: number) {
-  Bun.spawnSync(["pkill", "-f", `__master --port ${port}`]);
-  Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${port + 1}`]);
+  stopServe(port);
   killLaunchedStudios(port, STARTED);
 }
 

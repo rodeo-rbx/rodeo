@@ -14,7 +14,7 @@
 // byte), or byte-safe-encode string fields — NOT hang.
 import { test, expect, afterAll } from "bun:test";
 import { join } from "path";
-import { killLaunchedStudios } from "../cli/helpers.js";
+import { killLaunchedStudios, stopServe } from "../cli/helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..");
 // Studios this file launches are reaped by session, never by pattern.
@@ -24,8 +24,7 @@ const RODEO = join(ROOT, "bin", "rodeo");
 const procs: Bun.Subprocess[] = [];
 
 function cleanup(port: number) {
-  Bun.spawnSync(["pkill", "-f", `__master --port ${port}`]);
-  Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${port + 1}`]);
+  stopServe(port);
   killLaunchedStudios(port, STARTED);
 }
 

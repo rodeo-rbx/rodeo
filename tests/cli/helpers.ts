@@ -90,6 +90,34 @@ export function killMatching(pattern: string): void {
   Bun.spawnSync(["pkill", "-9", "-f", pattern]);
 }
 
+/** Stop every process whose command line matches `pattern`: SIGTERM on Unix,
+ *  so a serve can clean up on the way out; Windows has no signal to ask with,
+ *  so there it is killMatching's hard kill. */
+export function stopMatching(pattern: string): void {
+  if (IS_WINDOWS) return killMatching(pattern);
+  Bun.spawnSync(["pkill", "-f", pattern]);
+}
+
+/** Kill `proc` and what it runs. A wrapper like `mise exec` replaces itself
+ *  with its command on Unix, so killing it kills the command; Windows has no
+ *  exec, the command runs as the wrapper's child, and killing the wrapper
+ *  alone would orphan it — kill the whole tree there. */
+export function killTree(proc: { pid: number; kill: () => void }): void {
+  if (IS_WINDOWS) {
+    Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(proc.pid)]);
+    return;
+  }
+  proc.kill();
+}
+
+/** Stop the serve children (`__master` on `port`, `__studio-backend` on
+ *  `port + 1`) a killed run client may leave behind, so a file never poisons
+ *  later runs on its port. */
+export function stopServe(port: number): void {
+  stopMatching(`__master --port ${port}`);
+  stopMatching(`__studio-backend --port ${port + 1}`);
+}
+
 /** Session ids of the Studios a serve on `masterPort` launched since
  *  `sinceMs`: each launch's RunScript bootstrap, written to the serve's
  *  .rodeo/.temp (the repo root for tests), stamps its backend port. Lets a

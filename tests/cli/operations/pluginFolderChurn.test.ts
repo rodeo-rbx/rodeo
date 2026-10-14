@@ -1,7 +1,7 @@
 // Plugin-folder churn does not reach runs in other Studios.
 //
 // Every studio backend installs its own `rodeo-<build>-<port>.rbxm` into the
-// one local plugins folder Studio watches (~/Documents/Roblox/Plugins) when it
+// one local plugins folder Studio watches (pluginsDir()) when it
 // starts, and removes it when it stops. Studio hot-loads changes in that
 // folder into every open Studio, which is how a hand-opened Studio joins a new
 // serve. The question this guards is whether such a change also disturbs the
@@ -21,15 +21,15 @@
 // Ports 47360/47370 are this file's own; the paths in `--ppid` cleanup are too.
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeKeptPluginFile } from "../helpers.js";
+import { pluginsDir, removeKeptPluginFile } from "../helpers.js";
 
 const ROOT = join(import.meta.dir, "..", "..", "..");
 const RODEO = join(ROOT, "bin", "rodeo");
 const PORT_A = 47360; // the serve whose run must survive
 const PORT_B = 47370; // the serve whose start/stop is the perturbation
-const PLUGINS = join(homedir(), "Documents", "Roblox", "Plugins");
+const PLUGINS = pluginsDir();
 const RUN_SECONDS = 20;
 
 const procs: Bun.Subprocess[] = [];

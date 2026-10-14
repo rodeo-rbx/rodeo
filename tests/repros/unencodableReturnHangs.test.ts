@@ -19,7 +19,7 @@ import { describe, beforeAll, afterAll, it, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cliStudioHandle, killLaunchedStudios, runRodeo } from "../cli/helpers.js";
+import { cliStudioHandle, killLaunchedStudios, runRodeo, stopServe } from "../cli/helpers.js";
 
 const PORT = 47600;
 // Studios this file launches are reaped by session, never by pattern.
@@ -45,8 +45,7 @@ describe("unencodable return values end the run (no hang)", () => {
   });
   afterAll(async () => {
     await cli.close();
-    Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
-    Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
+    stopServe(PORT);
     killLaunchedStudios(PORT, STARTED);
     rmSync(dir, { recursive: true, force: true });
   });

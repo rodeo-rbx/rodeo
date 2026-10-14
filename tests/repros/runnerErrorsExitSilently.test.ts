@@ -8,7 +8,7 @@
 // logged by the engine and already streams through the run's output, so it
 // must not be repeated — in every context, mcp (StudioMCP) included.
 import { describe, beforeAll, afterAll, it, expect } from "bun:test";
-import { cliStudioHandle, killLaunchedStudios, runRodeo } from "../cli/helpers.js";
+import { cliStudioHandle, killLaunchedStudios, runRodeo, stopServe } from "../cli/helpers.js";
 
 const PORT = 47540;
 // Studios this file launches are reaped by session, never by pattern.
@@ -27,8 +27,7 @@ describe("runner errors reach the terminal once (issue #34)", () => {
   beforeAll(cli.spawn);
   afterAll(async () => {
     await cli.close();
-    Bun.spawnSync(["pkill", "-f", `__master --port ${PORT}`]);
-    Bun.spawnSync(["pkill", "-f", `__studio-backend --port ${PORT + 1}`]);
+    stopServe(PORT);
     killLaunchedStudios(PORT, STARTED);
   });
 
