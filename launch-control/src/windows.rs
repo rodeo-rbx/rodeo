@@ -6,7 +6,7 @@ use std::io;
 use std::mem;
 use std::process::ExitStatus;
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use std::os::windows::io::FromRawHandle;
@@ -22,13 +22,14 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::Threading::{
     AttachThreadInput, CreateProcessW, GetCurrentThreadId, GetExitCodeProcess, OpenProcess,
-    TerminateProcess, WaitForSingleObject, PROCESS_INFORMATION, STARTF_USESHOWWINDOW,
-    STARTF_USESTDHANDLES, STARTUPINFOW,
+    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_INFORMATION,
+    PROCESS_NAME_WIN32, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject, JobObjectBasicProcessIdList,
     JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextLengthW,
@@ -63,6 +64,8 @@ const ADOPT_GRACE: Duration = Duration::from_secs(3);
 pub(crate) struct WindowsHandle {
     process_handle: HANDLE,
     pid: u32,
+    /// The job a non-detached app runs in; `None` for detached apps.
+    job: Option<Arc<AppJob>>,
 }
 
 // HANDLE is Send+Sync safe on Windows (opaque kernel object reference).
@@ -214,6 +217,11 @@ impl WindowsHandle {
         if wait_result != WAIT_TIMEOUT {
             return Ok(()); // already dead
         }
+        // A non-detached app goes with every process it started (Studio's play
+        // server and client processes, its WebView2 and crash reporter).
+        if self.job.as_ref().is_some_and(|job| job.terminate()) {
+            return Ok(());
+        }
         let ok = unsafe { TerminateProcess(self.process_handle, 1) };
         if ok == 0 {
             Err(io::Error::new(io::ErrorKind::Other, "TerminateProcess failed"))
@@ -338,10 +346,13 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
     // teardown when parent dies doesn't propagate.
     // CREATE_NEW_PROCESS_GROUP: child is in its own process group, so Ctrl+C/
     // Ctrl+Break delivered to the parent group don't reach it.
-    // CREATE_BREAKAWAY_FROM_JOB: job membership is inherited, so when the
-    // launching process sits inside a kill-on-close job (rodeo's serve
-    // supervisor wraps its children in one), the child would die with that job
-    // regardless of any detach handling here. Breakaway needs the job to set
+    // CREATE_BREAKAWAY_FROM_JOB (every launch, detached or not): job membership
+    // is inherited, so when the launching process sits inside a kill-on-close
+    // job (rodeo's serve supervisor wraps its children in one), the app — and
+    // every process the app starts — would die with that job. A detached app
+    // must outlive it; a non-detached one is bound to a job of its own right
+    // after creation instead (see `AppJob`), which can let what the app hands
+    // off to outlive it. Breakaway needs the job to set
     // JOB_OBJECT_LIMIT_BREAKAWAY_OK; if the enclosing job forbids it,
     // CreateProcessW fails ERROR_ACCESS_DENIED and we retry without the flag —
     // launches must not start failing just because the job disallows escape.
@@ -351,7 +362,7 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
     let creation_flags: u32 = if cmd.detached {
         DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
     } else {
-        0
+        CREATE_BREAKAWAY_FROM_JOB
     };
 
     let mut ok = 0;
@@ -376,11 +387,10 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
                 &mut pi,
             )
         };
-        // Success, or nothing left to strip for the retry (non-detached
-        // spawns never set the breakaway bit): done. A failed breakaway
-        // attempt (job without BREAKAWAY_OK → ERROR_ACCESS_DENIED) falls
-        // through to the jobbed retry — a detached child that dies with the
-        // job beats no child at all.
+        // Success, or the retry already stripped the breakaway bit: done. A
+        // failed breakaway attempt (job without BREAKAWAY_OK →
+        // ERROR_ACCESS_DENIED) falls through to the jobbed retry — a child
+        // that dies with the job beats no child at all.
         if ok != 0 || flags & CREATE_BREAKAWAY_FROM_JOB == 0 {
             break;
         }
@@ -412,6 +422,16 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
         unsafe { CloseHandle(*w) };
     }
 
+    // Bind non-detached apps to a job of their own so the OS tears them down
+    // when this process exits — even on an uncatchable TerminateProcess, where
+    // no Drop/handler runs. Bound now rather than after adoption: having broken
+    // away from any inherited job, the app is otherwise in none of ours until
+    // then. `detached` apps are meant to outlive us, so skip them.
+    let job = if cmd.detached { None } else { AppJob::new().map(Arc::new) };
+    if let Some(job) = &job {
+        job.assign(pi.hProcess);
+    }
+
     // The launched process may be a bootstrapper that relaunches the real GUI
     // app as a separate process and then exits — Roblox Studio's
     // RobloxStudioBeta.exe does exactly this. Adopt the real, surviving editor
@@ -421,11 +441,12 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
     let (pid, process_handle) =
         adopt_real_process(&exe_name, &pre_pids, pi.dwProcessId, pi.hProcess, via_shell, &cmd.args);
 
-    // Bind non-detached apps to our lifetime job so the OS tears them down when
-    // this process exits — even on an uncatchable TerminateProcess, where no
-    // Drop/handler runs. `detached` apps are meant to outlive us, so skip them.
-    if !cmd.detached {
-        bind_to_lifetime_job(process_handle);
+    // Studio's bootstrapper relaunches the editor breaking away from the job,
+    // so bind the adopted editor too.
+    if let Some(job) = &job {
+        if pid != pi.dwProcessId {
+            job.assign(process_handle);
+        }
     }
 
     // Drain each captured pipe through the shared line-channel helpers (the same
@@ -446,7 +467,15 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
     });
 
     let exit_state = std::sync::Arc::new(std::sync::Mutex::new(crate::ExitState::default()));
-    crate::start_exit_watcher(pid, exit_state.clone());
+    // Release the job before anyone hears of the exit: an `on_exit` callback
+    // may tear this process down, closing the job handle and killing what the
+    // app handed off to.
+    let release = job.clone();
+    crate::start_exit_watcher_after(pid, exit_state.clone(), move || {
+        if let Some(job) = release {
+            job.release(&exe_name);
+        }
+    });
 
     Ok(crate::Child {
         pid,
@@ -456,6 +485,7 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
         inner: WindowsHandle {
             process_handle,
             pid,
+            job,
         },
     })
 }
@@ -524,7 +554,7 @@ fn open_tracked_handle(pid: u32) -> Option<HANDLE> {
     let h = unsafe {
         OpenProcess(
             // PROCESS_SET_QUOTA is required (alongside PROCESS_TERMINATE) for
-            // AssignProcessToJobObject — see `bind_to_lifetime_job`.
+            // AssignProcessToJobObject — see `AppJob::assign`.
             SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
             0,
             pid,
@@ -537,54 +567,152 @@ fn open_tracked_handle(pid: u32) -> Option<HANDLE> {
     }
 }
 
-/// Process-global job object that non-detached launched apps are bound to.
+/// Kill-on-close job object one non-detached launch runs in, together with
+/// every process the app starts (they inherit it): for Roblox Studio, its play
+/// server and client processes, its WebView2 and its crash reporter.
 ///
-/// Configured `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: when **this** process exits
-/// — gracefully or via an uncatchable `TerminateProcess` — the OS closes the
-/// job handle and tears down every app we launched. This is the Windows
-/// analogue of the Unix process-group cleanup callers rely on (a parent dies →
-/// its launched apps die). Stored as `usize` because a raw `HANDLE` isn't
-/// `Send`/`Sync`; `0` means "job creation failed, no-op".
-static LIFETIME_JOB: OnceLock<usize> = OnceLock::new();
-
-fn lifetime_job() -> HANDLE {
-    let raw = *LIFETIME_JOB.get_or_init(|| unsafe {
-        let job = CreateJobObjectW(ptr::null(), ptr::null());
-        if job.is_null() {
-            return 0;
-        }
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const _,
-            mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        job as usize
-    });
-    raw as HANDLE
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: when **this** process exits —
+/// gracefully or via an uncatchable `TerminateProcess` — the OS closes the
+/// job handle and tears the app down with everything it started. This is the
+/// Windows analogue of the Unix process-group cleanup callers rely on (a
+/// parent dies → its launched apps die). One job per launch, so killing an
+/// app ([`AppJob::terminate`]) takes exactly its own processes with it.
+///
+/// `JOB_OBJECT_LIMIT_BREAKAWAY_OK`: a process the app starts with
+/// `CREATE_BREAKAWAY_FROM_JOB` leaves the job, as Studio's bootstrapper does
+/// when it relaunches the editor (which adoption then binds explicitly).
+///
+/// An app that exits on its own decides what outlives it: see
+/// [`AppJob::release`].
+struct AppJob {
+    handle: HANDLE,
 }
 
-/// Bind a process to the lifetime job so it dies when this process does.
-///
-/// Studio's bootstrapper relaunches the real editor as a process that breaks
-/// away from any *inherited* job, so the editor escapes the job our own parent
-/// put us in. An *explicit* `AssignProcessToJobObject` after adoption is not
-/// defeated by breakaway and nests under any pre-existing job on Windows 8+.
-/// Best-effort: assignment can still fail (e.g. a job in the hierarchy that
-/// disallows nesting) — log and continue rather than fail the launch.
-fn bind_to_lifetime_job(process_handle: HANDLE) {
-    let job = lifetime_job();
-    if job.is_null() {
-        return;
+// HANDLE is a raw pointer; the job handle is only used for kernel calls that
+// are safe from any thread.
+unsafe impl Send for AppJob {}
+unsafe impl Sync for AppJob {}
+
+impl AppJob {
+    fn new() -> Option<Self> {
+        let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if handle.is_null() {
+            tracing::warn!(
+                error = ?io::Error::last_os_error(),
+                "CreateJobObjectW failed; launched app won't be auto-killed when this process exits",
+            );
+            return None;
+        }
+        let job = Self { handle };
+        job.set_limits(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK);
+        Some(job)
     }
-    let ok = unsafe { AssignProcessToJobObject(job, process_handle) };
-    if ok == 0 {
-        tracing::debug!(
-            error = ?io::Error::last_os_error(),
-            "AssignProcessToJobObject failed; launched app won't be auto-killed when this process exits",
-        );
+
+    fn set_limits(&self, flags: u32) {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = flags;
+        unsafe {
+            SetInformationJobObject(
+                self.handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+    }
+
+    /// Bind a process to the job.
+    ///
+    /// An *explicit* `AssignProcessToJobObject` is not defeated by breakaway
+    /// and nests under any pre-existing job on Windows 8+. Best-effort:
+    /// assignment can still fail (e.g. a job in the hierarchy that disallows
+    /// nesting) — log and continue rather than fail the launch.
+    fn assign(&self, process: HANDLE) {
+        let mut member: BOOL = 0;
+        if unsafe { IsProcessInJob(process, self.handle, &mut member) } != 0 && member != 0 {
+            return;
+        }
+        if unsafe { AssignProcessToJobObject(self.handle, process) } == 0 {
+            tracing::warn!(
+                error = ?io::Error::last_os_error(),
+                "AssignProcessToJobObject failed; launched app won't be auto-killed when this process exits",
+            );
+        }
+    }
+
+    /// Kill every process in the job. False if the call failed.
+    fn terminate(&self) -> bool {
+        unsafe { TerminateJobObject(self.handle, 1) != 0 }
+    }
+
+    /// The app exited on its own: let what it started outlive it. Roblox
+    /// Studio exits to let its installer update it, and an installer killed
+    /// with the job leaves the update half-done, after which Studio refuses to
+    /// start ("update already in progress") until it is reinstalled. Instances
+    /// of the app itself are the exception (Studio's play server and client
+    /// processes, `app_exe`): they go with it, as they would had we killed it.
+    fn release(&self, app_exe: &str) {
+        for pid in self.pids() {
+            if image_name(pid).is_some_and(|name| name.eq_ignore_ascii_case(app_exe)) {
+                unsafe {
+                    let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                    if !process.is_null() {
+                        TerminateProcess(process, 1);
+                        CloseHandle(process);
+                    }
+                }
+            }
+        }
+        self.set_limits(JOB_OBJECT_LIMIT_BREAKAWAY_OK);
+    }
+
+    /// PIDs of the processes in the job.
+    fn pids(&self) -> Vec<u32> {
+        // JOBOBJECT_BASIC_PROCESS_ID_LIST with room for 256 ids; a longer list
+        // fails with ERROR_MORE_DATA but still fills what fits.
+        #[repr(C)]
+        struct ProcessIdList {
+            assigned: u32,
+            listed: u32,
+            ids: [usize; 256],
+        }
+        let mut list: ProcessIdList = unsafe { mem::zeroed() };
+        unsafe {
+            QueryInformationJobObject(
+                self.handle,
+                JobObjectBasicProcessIdList,
+                &mut list as *mut _ as *mut _,
+                mem::size_of::<ProcessIdList>() as u32,
+                ptr::null_mut(),
+            )
+        };
+        let listed = (list.listed as usize).min(list.ids.len());
+        list.ids[..listed].iter().map(|&id| id as u32).collect()
+    }
+}
+
+impl Drop for AppJob {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// The executable file name of a running process (e.g. "RobloxStudioBeta.exe").
+fn image_name(pid: u32) -> Option<String> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        if ok == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit(['\\', '/']).next().map(str::to_string)
     }
 }
 

@@ -6,8 +6,10 @@
 //! is silently in the same job, so when the serve supervisor exits (closing the
 //! job handle) the kernel kills the Studio — no userland detach logic ever
 //! runs. This job adds `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so a child spawned with
-//! `CREATE_BREAKAWAY_FROM_JOB` (launch-control's detached spawn) legitimately
-//! leaves the job while everything else keeps the kill-on-close cascade.
+//! `CREATE_BREAKAWAY_FROM_JOB` (every launch-control spawn: a detached Studio
+//! outlives the serve, a non-detached one runs in a kill-on-close job of its
+//! own instead) legitimately leaves the job while everything else keeps the
+//! kill-on-close cascade.
 //!
 //! The child is assigned after a normal (non-suspended) spawn. The unguarded
 //! window is a few microseconds against serve children that take seconds to

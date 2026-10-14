@@ -68,8 +68,20 @@ pub(crate) type ExitStateShared = Arc<Mutex<ExitState>>;
 /// launches are reparented to launchd), so the status passed to callbacks is a
 /// synthesized successful exit. Callers that need the real exit code should use
 /// `Child::try_wait()` / `wait()` instead.
+#[cfg(target_os = "macos")]
 pub(crate) fn start_exit_watcher(pid: u32, state: ExitStateShared) {
+    start_exit_watcher_after(pid, state, || {});
+}
+
+/// [`start_exit_watcher`], running `first` on the watcher thread once the
+/// process exits, before the exit is recorded and any `on_exit` callback runs.
+pub(crate) fn start_exit_watcher_after(
+    pid: u32,
+    state: ExitStateShared,
+    first: impl FnOnce() + Send + 'static,
+) {
     parent_exit::on_pid_exit(pid, move || {
+        first();
         let status = synth_exit_status();
         let mut guard = state.lock().unwrap();
         let old = std::mem::replace(&mut *guard, ExitState::Exited(status));
