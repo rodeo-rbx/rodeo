@@ -885,6 +885,11 @@ pub fn studio_content_path() -> Option<String> {
 /// already set `ROBLOX_STUDIO_PATH` or when the registry pointer is valid, so
 /// the happy path and explicit overrides are untouched. Child processes inherit
 /// the variable, so a single call at the top-level entry covers the whole tree.
+///
+/// Silent: it runs before tracing is initialized, and the stale pointer is the
+/// normal state after every Studio update, so a warning would print on every
+/// command until Studio rewrites it. Callers log [`healed_studio_root`] once
+/// their tracing is up.
 pub fn ensure_studio_env() {
     // Respect an explicit override — the user (or a test harness) knows best.
     if std::env::var_os("ROBLOX_STUDIO_PATH").is_some() {
@@ -905,16 +910,17 @@ pub fn ensure_studio_env() {
             std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Roblox"))
         {
             if root.join("Versions").is_dir() {
-                // Runs before tracing is initialized (main → here → tokio →
-                // subscriber), so tracing::warn! would be dropped; use stderr.
-                eprintln!(
-                    "rodeo: RobloxStudio registry pointer is stale (deleted version dir, \
-                     likely after a Studio auto-update); scanning {}\\Versions for a live \
-                     install",
-                    root.display()
-                );
-                std::env::set_var("ROBLOX_STUDIO_PATH", root);
+                std::env::set_var("ROBLOX_STUDIO_PATH", &root);
+                let _ = HEALED_STUDIO_ROOT.set(root);
             }
         }
     }
+}
+
+static HEALED_STUDIO_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The Roblox root [`ensure_studio_env`] pointed `ROBLOX_STUDIO_PATH` at, if
+/// it found the registry pointer stale.
+pub fn healed_studio_root() -> Option<&'static std::path::Path> {
+    HEALED_STUDIO_ROOT.get().map(PathBuf::as_path)
 }

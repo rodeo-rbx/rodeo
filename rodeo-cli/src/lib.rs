@@ -298,6 +298,14 @@ pub async fn run() {
         None
     };
 
+    if let Some(root) = rbx_control::studio::launch::healed_studio_root() {
+        tracing::debug!(
+            "Roblox Studio's registry pointer names a deleted version (normal after a Studio update); \
+             finding Studio under {}\\Versions instead",
+            root.display()
+        );
+    }
+
     let result = match cli.command {
         Commands::Serve { port, master, studio_mode, master_host, master_port, ppid } => {
             if let Some(ppid) = ppid { parent_exit::on_parent_exit(ppid); }
