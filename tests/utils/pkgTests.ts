@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { RunCodeOpts, RunResult } from "../../rodeo-client-ts/src/run.js";
 import { writeMinimalGlb } from "./glb.js";
+import { countPixels, decodePng } from "./png.js";
 
 export type RunFn = (opts: RunCodeOpts) => Promise<RunResult>;
 
@@ -497,7 +498,7 @@ export function process(run: RunFn): void {
   });
 }
 
-// ── capture (15 tests, plugin-only) ────────────────────────────────────────
+// ── capture (16 tests, plugin-only) ────────────────────────────────────────
 //
 // roblox.captureViewport drives Studio's device simulator for `device` / `viewportSize`
 // (plugin-handled RPCs) and finalizes the engine's frame on the run client,
@@ -536,6 +537,39 @@ export function capture(run: RunFn): void {
       const size = pngSize(r.path);
       expect(size).toEqual({ width: Math.round(r.vpX), height: Math.round(r.vpY) });
       expect({ width: r.width, height: r.height }).toEqual(size);
+    } finally {
+      rmrf(out);
+    }
+  });
+
+  it("capture: the window's frame shows the scene", async () => {
+    // A minimized Studio (how Windows starts a background launch) lays its
+    // viewport out at a stub size and draws no 3D scene: this frame came back
+    // the viewport's size, all background. A red cube in front of the camera
+    // must show. It sits high above the place's content and under the camera,
+    // which renders it but keeps it local (nothing reaches a Team Create place).
+    const out = captureOut("scene");
+    try {
+      const result = await run({
+        showReturn: true,
+        source: `local roblox = require("@rodeo/roblox")
+          local cam = workspace.CurrentCamera
+          local part = Instance.new("Part")
+          part.Size = Vector3.new(20, 20, 20)
+          part.Color = Color3.fromRGB(255, 0, 0)
+          part.Anchored = true
+          part.Position = Vector3.new(0, 1000, 0)
+          part.Parent = cam
+          local ok, path = pcall(roblox.captureViewport, "${out}",
+            { cframe = CFrame.lookAt(Vector3.new(40, 1020, 40), part.Position), settle = 1 })
+          part:Destroy()
+          if not ok then error(path, 0) end
+          return { path = path }`,
+      });
+      expect(result.ok, result.output).toBe(true);
+      const img = decodePng(readFileSync((result.return as { path: string }).path));
+      const red = countPixels(img, (r, g, b) => r > 150 && g < 90 && b < 90);
+      expect(red / (img.width * img.height)).toBeGreaterThan(0.02);
     } finally {
       rmrf(out);
     }

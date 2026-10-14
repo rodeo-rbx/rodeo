@@ -411,6 +411,16 @@ impl Studio {
         }
     }
 
+    /// Restore a minimized Studio window beneath the user's windows, without
+    /// activating it (Windows; see `launch_control::Child::show_behind`).
+    pub fn show_behind(&self) {
+        if let Some(ref handle) = *self.handle.lock().unwrap() {
+            if let Err(e) = handle.show_behind() {
+                tracing::warn!(pid = self.pid, "show_behind failed: {e}");
+            }
+        }
+    }
+
     /// One pre-warm probe of Studio's accessibility connection: walk the menu
     /// bar for "File > Save to File" (read-only — nothing is pressed).
     /// Returns true when the caller should stop probing (item answered, or

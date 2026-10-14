@@ -440,6 +440,20 @@ impl Child {
         }
     }
 
+    /// Restore the app's minimized main window beneath every other window,
+    /// without activating it (Windows; no-op elsewhere: a hidden macOS app
+    /// keeps its size and renders). See `WindowsHandle::show_behind`.
+    pub fn show_behind(&self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            return self.inner.show_behind();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(())
+        }
+    }
+
     /// Hand activation back to `prev` (a pid returned by `activate`),
     /// bringing only its key window forward. No-op off macOS.
     pub fn restore_focus(&self, prev: u32) {

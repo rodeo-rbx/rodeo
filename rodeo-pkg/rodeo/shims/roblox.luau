@@ -216,8 +216,7 @@ local function capture(output: string?, options: CaptureOptions?): (string, Capt
 		-- GPU can take well over 10s (the simulator's largest frame takes about
 		-- 7s here), and a timer only invented failures. The engine raises its
 		-- own errors for what cannot work (limits, the server DOM), and those
-		-- propagate. The one case that never completes, a minimized Studio on
-		-- Windows, is documented; killing the run abandons it.
+		-- propagate.
 		local contentId: string? = nil
 		local okShot, shotErr = pcall(function()
 			CaptureService:CaptureScreenshot(function(id: string)

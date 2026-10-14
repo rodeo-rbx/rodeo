@@ -108,6 +108,9 @@ pub struct Studio {
     /// itself for SaveInPlace, the output path for SaveToPath), absolutized.
     /// None for place-id launches. Surfaced in `rodeo state`.
     working_path: Option<String>,
+    /// A background launch starts minimized (on Windows); set until
+    /// `show_behind_once` has restored it.
+    minimized_at_launch: std::sync::atomic::AtomicBool,
 }
 
 impl Studio {
@@ -181,6 +184,7 @@ impl Studio {
             inner,
             source_path,
             working_path,
+            minimized_at_launch: std::sync::atomic::AtomicBool::new(opts.background),
         })
     }
 
@@ -202,6 +206,7 @@ impl Studio {
             ),
             source_path: None,
             working_path: found.working_path,
+            minimized_at_launch: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -221,6 +226,15 @@ impl Studio {
     /// Undo activation Studio grabs for itself during a mode transition
     /// (see `rbx_control::studio::Studio::guard_focus`).
     pub fn guard_focus(&self, window: std::time::Duration) { self.inner.guard_focus(window) }
+    /// Once Studio is up, give the window a background launch minimized its
+    /// real size, beneath the user's windows (see
+    /// `rbx_control::studio::Studio::show_behind`). Only the first call acts,
+    /// so a window the user minimizes later stays minimized.
+    pub fn show_behind_once(&self) {
+        if self.minimized_at_launch.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.inner.show_behind();
+        }
+    }
     pub fn warm_save_menu_once(&self) -> bool { self.inner.warm_save_menu_once() }
     pub fn kill(&self) { self.inner.kill() }
 

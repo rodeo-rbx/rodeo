@@ -37,8 +37,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MsgWaitForMultipleObjects, PeekMessageW, SetForegroundWindow, SetWindowPos, ShowWindow,
     CHILDID_SELF, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER,
     HWND_BOTTOM, MSG, OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
+    SWP_NOSIZE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
@@ -235,6 +235,28 @@ impl WindowsHandle {
         arm_focus_guard(&self.guard, AppWindows { pid: self.pid, job: self.job.clone() }, window);
     }
 
+    /// Restore a minimized main window without bringing it forward: it goes
+    /// to the bottom of the z-order, then is restored inactive there, so it
+    /// is never above the user's window at any point (measured by polling the
+    /// z-order throughout). A background launch starts minimized, which
+    /// keeps its startup out of sight, but a minimized Studio lays its
+    /// viewport out at a stub size and renders no 3D scene: captures come
+    /// back blank and `Camera.ViewportSize` is wrong until it is restored.
+    /// No-op when the window isn't minimized.
+    pub fn show_behind(&self) -> Result<()> {
+        let hwnd = find_main_window_by_pid(self.pid)
+            .ok_or_else(|| Error::Platform("no window found for process".into()))?;
+        unsafe {
+            if IsIconic(hwnd) == 0 {
+                return Ok(());
+            }
+            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        tracing::info!(pid = self.pid, "show_behind: restored the minimized window beneath the user's");
+        Ok(())
+    }
+
     /// Kill returning io::Error (for Child::kill compatibility).
     pub fn kill_io(&self) -> io::Result<()> {
         // Check if still running first
@@ -326,6 +348,9 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as u32;
     si.dwFlags = STARTF_USESHOWWINDOW;
+    // A background launch starts minimized, so its startup stays out of
+    // sight; once the app is up, the caller restores it beneath the user's
+    // windows (`WindowsHandle::show_behind`).
     si.wShowWindow = if cmd.background {
         SW_SHOWMINNOACTIVE as u16
     } else {

@@ -418,13 +418,7 @@ as errors: the device simulator accepts at most 7680 by 4320. The capture
 
 then waits for the engine with no deadline, since a large frame or a slow
 
-GPU can take well over 10s (the largest frame takes about 7s). One case
-
-never completes and waits until the run is killed: a minimized Studio on
-
-Windows (background launches are minimized there; launch focused or
-
-restore the window).
+GPU can take well over 10s (the largest frame takes about 7s).
 
 ```luau
 (output: string?, options: CaptureOptions?) -> (string, CaptureInfo)
