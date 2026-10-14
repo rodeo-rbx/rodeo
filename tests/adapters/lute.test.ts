@@ -9,7 +9,7 @@
 //   run          — executes via `rodeo run`; every case passes except the
 //                  ones CASE_GAPS lists, which must fail (a listed case that
 //                  starts passing fails the test, so the list stays honest)
-//   gap          — in-scope module, unimplemented surface; skipped with reason
+//   gap          — a test file that can't run under rodeo; skipped with reason
 //   out-of-scope — needs a built-in rodeo can't provide; skipped with reason
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -29,80 +29,58 @@ const SUITE_DIR = join(import.meta.dir, "lute");
 // ---------------------------------------------------------------------------
 
 const RUN: string[] = [
+  "lute/crypto.test.luau",
+  "lute/debugger.test.luau",
+  "lute/net.test.luau",
   "lute/task.test.luau",
+  "lute/vm.test.luau",
   "std/fs.test.luau",
   "std/io.test.luau",
   "std/json.test.luau",
+  "std/luau.test.luau",
+  "std/net.test.luau",
   "std/path/path.posix.test.luau",
   "std/path/path.win32.test.luau",
   "std/process.test.luau",
+  "std/signal.test.luau",
   "std/stringext.test.luau",
+  "std/syntax/parser.test.luau",
+  "std/syntax/printer.test.luau",
+  "std/syntax/query.test.luau",
+  "std/syntax/utils.test.luau",
   "std/tableext.test.luau",
   "std/test.test.luau",
   "std/time.test.luau",
 ];
 
-// Known-failing cases of a `run` file ("Suite.case" → reason): in-scope
-// modules with missing surface.
-const SPAWNS_LUTE =
-  "runs a child script with process.execPath(), which is the rodeo CLI here, not lute";
+// Known-failing cases of a `run` file ("Suite.case" → reason): cases that
+// can't pass under rodeo.
+const TYPEOF = "asserts the typeof of a lute value; Studio's typeof reports a stand-in for one as userdata";
+const UPGRADE_HANDLER =
+  "its websocket upgrade handler is a function of the script's, which lute calls without letting it wait for Studio";
 const allFor = (reason: string, cases: string[]) =>
   Object.fromEntries(cases.map((name) => [name, reason]));
 
 const CASE_GAPS: Record<string, Record<string, string>> = {
-  "std/fs.test.luau": {
-    "FsSuite.linkAndSymlinkAndCopy": "@lute/fs link/symlink have no host RPC",
-    "FsSuite.watchIteratorOnChange": "@lute/fs watch has no host RPC",
-  },
-  "std/io.test.luau": allFor(SPAWNS_LUTE, [
-    "IoWriteSuite.writeBasic",
-    "IoWriteSuite.writeEmptyString",
-    "IoWriteSuite.writeLargeData",
-    "IoWriteSuite.writeMixedWithPrint",
-    "IoWriteSuite.writeMultipleArgs",
-    "IoWriteSuite.writeNoArgs",
-    "IoWriteSuite.writeNoTrailingNewline",
-    "IoWriteSuite.writeNulByteSafe",
-    "IoWriteSuite.writeSequential",
-    "IoWriteSuite.writeTypeError",
+  "lute/debugger.test.luau": allFor(TYPEOF, [
+    "LuteDebugLibrarySuite.launchAndHitBreakpoint",
+    "LuteDebugLibrarySuite.multisource",
+    "LuteDebugLibrarySuite.setAndRemove",
+    "LuteDebugLibrarySuite.stopOnBp",
   ]),
-  "std/process.test.luau": allFor(SPAWNS_LUTE, [
-    "ProcessSuite.runChildReadingStdinDoesNotHang",
-    "ProcessSuite.runPreservesCapturedOutputBytes",
-  ]),
-  "std/test.test.luau": allFor(SPAWNS_LUTE, [
-    "LuteStdTestFramework.assert.buffereqErrorMessageInSuite",
-    "LuteStdTestFramework.assert.buffereqUnequalLength",
-    "LuteStdTestFramework.assert.eqErrorMessageInCase",
-    "LuteStdTestFramework.assert.eqErrorMessageInSuite",
-    "LuteStdTestFramework.assert.neqErrorMessageInCase",
-    "LuteStdTestFramework.assert.neqErrorMessageInSuite",
-    "LuteStdTestFramework.assert.strContainsInstancesNegative",
-    "LuteStdTestFramework.assert.strContainsMultipleInstanceFails",
-    "LuteStdTestFramework.assert.strContainsSingleInstanceFails",
-    "LuteStdTestFramework.assert.tableeqErrorMessageInCase",
-    "LuteStdTestFramework.assert.tableeqErrorMessageInSuite",
-    "LuteStdTestFramework.assert.throwsWithErrorMessage",
-    "LuteStdTestFramework.assert.throwsWithNoError",
-    "LuteStdTestFramework.luteDoesntReportXpcallAsErrorWhenAccessingFieldOfNilInCase",
-    "LuteStdTestFramework.luteDoesntReportXpcallAsErrorWhenAccessingFieldOfNilInSuite",
+  "lute/net.test.luau": allFor(UPGRADE_HANDLER, [
+    "LuteNetSuite.clientInitiatedCloseRunsOnclose",
+    "LuteNetSuite.clientWebsocketCallbacksSurviveGc",
+    "LuteNetSuite.serveBinaryWebsocketAndConnect",
+    "LuteNetSuite.serveWebsocketAndConnect",
   ]),
 };
 
-// Prefix → reason. Whole files skipped: in-scope modules, missing surface.
+// Prefix → reason. Whole files skipped: tests that can't run under rodeo.
 const GAP: Record<string, string> = {};
 
 // Prefix → reason. Needs a built-in the lute adapter can't provide.
-const OUT_OF_SCOPE: Record<string, string> = {
-  "lute/crypto.test.luau": "@lute/crypto has no host implementation",
-  "lute/debugger.test.luau": "@lute/debugger has no Studio counterpart",
-  "lute/net.test.luau": "@lute/net has no host networking",
-  "lute/vm.test.luau": "@lute/vm binds lute's own Luau VM",
-  "std/luau.test.luau": "@std/luau needs @lute/luau and lute's native parser",
-  "std/net.test.luau": "@std/net needs @lute/net",
-  "std/signal.test.luau": "process.onSignal has no host RPC",
-  "std/syntax": "@std/syntax needs lute's native parser (@lute/syntax)",
-};
+const OUT_OF_SCOPE: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -174,7 +152,7 @@ describe("lute conformance", () => {
     it(
       file,
       () => {
-        // A scratch copy of tests/ laid out as in lute's repo, run from its
+        // A scratch copy of tests/ and examples/ laid out as in lute's repo, run from its
         // root, so files the tests write stay out of the repo. A test file
         // registers its suites and `lute test` runs them, so the copy gets
         // RUN_REGISTERED appended (harness provisioning, not a test edit: the
@@ -182,6 +160,7 @@ describe("lute conformance", () => {
         const cwd = mkdtempSync(join(tmpdir(), "rodeo-lute-conformance-"));
         scratchDirs.push(cwd);
         cpSync(join(SUITE_DIR, "tests"), join(cwd, "tests"), { recursive: true });
+        cpSync(join(SUITE_DIR, "examples"), join(cwd, "examples"), { recursive: true });
         const script = join(cwd, "tests", file);
         appendFileSync(script, RUN_REGISTERED);
         // Its own temp dir too: @std/system.tmpdir() is the run client's,
