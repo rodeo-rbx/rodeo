@@ -97,17 +97,24 @@ local domId = require(RODEO_UNIFIER_MODULE)
 -- inherit that — one Studio reporting two ids to one backend.
 local RODEO_STUDIO_ID_ATTR = `rodeoStudioId_{constants.PORT}`
 local studioId: string = ""
-do
-	local ws = game:GetService("Workspace")
-	if RunService:IsEdit() then
-		studioId = game:GetService("HttpService"):GenerateGUID(false)
-		ws:SetAttribute(RODEO_STUDIO_ID_ATTR, studioId)
-	else
-		local existing = ws:GetAttribute(RODEO_STUDIO_ID_ATTR)
-		if type(existing) == "string" and existing ~= "" then
-			studioId = existing
-		end
+
+-- A play DataModel's id, from its clone of the edit DOM's attribute. The
+-- attribute is not always there yet when this module loads (seen under
+-- NextGenerationReplication on a loaded machine), so computeState keeps
+-- calling this until it is: until then the master can tie the DOM to its
+-- studio only through the launch session.
+local function adoptStudioId()
+	local existing = game:GetService("Workspace"):GetAttribute(RODEO_STUDIO_ID_ATTR)
+	if type(existing) == "string" and existing ~= "" then
+		studioId = existing
 	end
+end
+
+if RunService:IsEdit() then
+	studioId = game:GetService("HttpService"):GenerateGUID(false)
+	game:GetService("Workspace"):SetAttribute(RODEO_STUDIO_ID_ATTR, studioId)
+else
+	adoptStudioId()
 end
 
 -- Session kind ("test" | "play") of a session rodeo started: mode_driver.luau
@@ -191,6 +198,11 @@ local function computeState(): State
 	local isRunning = RunService:IsRunning()
 	local isEdit = RunService:IsEdit()
 	local isRunMode = RunService:IsRunMode()
+
+	-- Only a play DataModel can be without its id (the edit DOM mints it).
+	if studioId == "" then
+		adoptStudioId()
+	end
 
 	local clientMcpStudioId = if role.joins then inputs.bindableMcpStudioId else next(inputs.clientMcpStudioIds)
 	local serverMcpStudioId = inputs.serverMcpStudioId or clientMcpStudioId or inputs.bindableMcpStudioId
