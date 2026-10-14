@@ -76,7 +76,9 @@ describe("isolated play mode (CLI)", () => {
   // populated. Exercises the full download → stage → patch GUID → StartServer
   // → plugin gate → script run chain via the CLI subprocess path.
   describe("published place", () => {
-    const PORT = 46261;
+    // Clear of the empty-place serve's pair (46260 and its backend's 46261):
+    // on Windows that backend can still be shutting down when this starts.
+    const PORT = 46264;
     const PLACE_ID = 72824109308551;
     const UNIVERSE_ID = 8612861022;
     let bg: BackgroundProcess;
