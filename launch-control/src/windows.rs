@@ -36,7 +36,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DispatchMessageW, EnumWindows, GetAncestor, GetClassNameW,
-    GetForegroundWindow, GetLastActivePopup, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup, GetWindow, GetWindowTextLengthW,
+    GetWindowTextW, GUITHREADINFO,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, MsgWaitForMultipleObjects, PeekMessageW,
     SetForegroundWindow, SetWindowPos, ShowWindow, CHILDID_SELF, EVENT_OBJECT_SHOW,
     EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER, HWND_BOTTOM, MSG, OBJID_WINDOW,
@@ -201,7 +202,12 @@ impl WindowsHandle {
         // dialog the app put in front of the target swallows it.
         let fg = unsafe { GetForegroundWindow() };
         if fg == hwnd {
-            tracing::debug!(pid = self.pid, target = %describe_window(hwnd), "send_keystroke: target is foreground");
+            tracing::debug!(
+                pid = self.pid,
+                target = %describe_window(hwnd),
+                focus = %focus_of(hwnd),
+                "send_keystroke: target is foreground",
+            );
         } else {
             tracing::info!(
                 pid = self.pid,
@@ -1154,6 +1160,27 @@ fn window_title(hwnd: HWND) -> String {
     let mut title = [0u16; 128];
     let len = unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) }.max(0) as usize;
     String::from_utf16_lossy(&title[..len])
+}
+
+/// The window holding keyboard focus in `hwnd`'s thread, with the program it
+/// belongs to, for logs. A keystroke goes to that window, which can be a
+/// child another process owns (an embedded web view), not the app's own.
+fn focus_of(hwnd: HWND) -> String {
+    unsafe {
+        let thread = GetWindowThreadProcessId(hwnd, ptr::null_mut());
+        let mut info: GUITHREADINFO = mem::zeroed();
+        info.cbSize = mem::size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
+            return "none".into();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(info.hwndFocus, &mut pid);
+        format!(
+            "{} pid={pid} ({})",
+            describe_window(info.hwndFocus),
+            image_name(pid).unwrap_or_default()
+        )
+    }
 }
 
 /// `hwnd`'s title, class and state, for logs.
