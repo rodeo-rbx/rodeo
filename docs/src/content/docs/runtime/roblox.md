@@ -116,7 +116,11 @@ refused, there is no frame to capture. `pixelDensity` — DPI,
 
 2x display renders 3.06x: 7680x4320 becomes 23466x13200 with `resample =
 
-false`). `orientation` — `"Portrait"`, `"LandscapeLeft"` or
+false`). A density above the display's own renders below 1x, and since
+
+resampling never upscales, that capture errors unless `resample = false`
+
+keeps the smaller frame. `orientation` — `"Portrait"`, `"LandscapeLeft"` or
 
 `"LandscapeRight"`, phone and tablet forms only. `deviceForm` — the form of
 

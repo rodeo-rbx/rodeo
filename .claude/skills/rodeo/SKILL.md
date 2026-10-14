@@ -496,7 +496,9 @@ fields, each needing `device` or `viewportSize`: `scalingMode` (`"ActualResoluti
 default, `"ScaleToPhysicalSize"` = host DPI over `pixelDensity`; `"FitToWindow"` is
 refused, it renders at window size), a phone/tablet preset renders its full
 resolution so the image is larger than its inset viewport,
-`pixelDensity` (DPI 72 to 10000; 72 on a 2x display is 3.06x), `orientation`
+`pixelDensity` (DPI 72 to 10000; 72 on a 2x display is 3.06x; one above the
+display's own renders below 1x, which errors unless `resample = false` keeps the
+smaller frame, since resampling never upscales), `orientation`
 (`"Portrait"`, `"LandscapeLeft"`, `"LandscapeRight"`; phone/tablet forms only) and
 `deviceForm` (`"Desktop"` default, `"Phone"`, `"Tablet"`, `"Console"`, `"VR"` for the
 custom viewportSize device). Bad names error naming the option; the engine's own

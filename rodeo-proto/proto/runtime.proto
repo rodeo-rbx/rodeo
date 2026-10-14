@@ -129,9 +129,12 @@ message RobloxCaptureCollectResponse {
 // promoting the temporary texture is refused in play DOMs and capped at 8192
 // pixels a side everywhere. Begin snapshots that directory before
 // CaptureScreenshot; collect waits for exactly one complete PNG that appeared
-// since and matches the viewport at the display scale, then finalizes it:
-// scale check, all-black rejection (a frame Studio did not render), resample
-// to exactly width x height, PNG written atomically. Several new
+// since and has the viewport's shape (the viewport times one render scale:
+// the display scale, or under ScaleToPhysicalSize the display's pixel density
+// over pixelDensity, possibly below 1x), then finalizes it: scale check (a
+// frame below the viewport is only kept, never upscaled), all-black rejection
+// (a frame Studio did not render), resample to exactly width x height, PNG
+// written atomically. Several new
 // matching files at once (another Studio capturing concurrently) is an error,
 // never a guess.
 message RobloxCaptureBeginRequest {}

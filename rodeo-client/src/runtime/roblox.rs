@@ -87,14 +87,25 @@ fn finalize_pixels(
         ));
     }
 
-    // A genuine frame is the viewport times one display scale on both axes.
+    // A genuine frame is the viewport times one render scale on both axes.
     let rx = source_width as f64 / width as f64;
     let ry = source_height as f64 / height as f64;
-    if rx < 0.995 || ry < 0.995 || (rx - ry).abs() > 0.02 {
+    if (rx - ry).abs() > 0.02 {
         return Err(format!(
             "captured frame is {source_width}x{source_height}, not a whole multiple of the {width}x{height} viewport \
              ({rx:.2}x by {ry:.2}x). Studio handed back a frame rendered before the viewport changed; \
              raise `settle` so the new size has rendered before the capture."
+        ));
+    }
+    // Resampling never upscales silently. A frame below the viewport is
+    // written only at its own size, when asked to keep it.
+    if !keep_frame && rx < 0.995 {
+        return Err(format!(
+            "captured frame is {source_width}x{source_height}, smaller than the {width}x{height} viewport \
+             ({rx:.2}x), and resampling never upscales. Under ScaleToPhysicalSize the frame renders at the \
+             display's pixel density over `pixelDensity`: pass `resample = false` to keep it at that size, or \
+             lower `pixelDensity`. Otherwise Studio handed back a frame rendered before the viewport changed; \
+             raise `settle`."
         ));
     }
 
@@ -271,7 +282,7 @@ pub async fn roblox_capture_collect(
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
                 "roblox.captureViewport: the capture callback fired but no new frame appeared in {} within {}s \
-                 (expected a PNG about {width}x{height} at the display scale). In a running session rodeo \
+                 (expected a PNG shaped like the {width}x{height} viewport). In a running session rodeo \
                  reads the frame Studio writes to that directory; make sure the Studio window is rendering.",
                 snapshot.dir.display(),
                 CAPTURE_FILE_TIMEOUT.as_secs()
@@ -334,15 +345,18 @@ pub fn select_capture_file(
     }
 }
 
-/// A genuine frame is the viewport times one display scale on both axes (2x on
-/// Retina); the same tolerance `finalize_pixels` applies.
+/// A genuine frame is the viewport times one render scale on both axes: the
+/// display scale (2x on Retina), or under ScaleToPhysicalSize the display's
+/// pixel density over `pixelDensity`, which is below 1x when that density
+/// exceeds the display's. The same shape check `finalize_pixels` applies;
+/// whether a frame below the viewport is usable is its call.
 fn frame_matches_viewport(frame_width: u32, frame_height: u32, width: u32, height: u32) -> bool {
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || frame_width == 0 || frame_height == 0 {
         return false;
     }
     let rx = frame_width as f64 / width as f64;
     let ry = frame_height as f64 / height as f64;
-    rx >= 0.995 && ry >= 0.995 && (rx - ry).abs() <= 0.02
+    (rx - ry).abs() <= 0.02
 }
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -593,7 +607,21 @@ mod capture_finalize_tests {
     fn frame_smaller_than_viewport_is_an_error() {
         let dir = scratch("small");
         let err = finalize(&dir, 100, 50, 200, 100).expect_err("upscaling is never silent");
-        assert!(err.contains("100x50"), "{err}");
+        assert!(err.contains("100x50") && err.contains("resample = false"), "{err}");
+        assert!(!dir.join("nested/out.png").exists(), "nothing written on error");
+    }
+
+    // ScaleToPhysicalSize at a pixelDensity above the display's renders below
+    // 1x: 0.75x for a 640x360 viewport at density 220 on a 165-PPI display.
+    #[test]
+    fn a_kept_frame_below_the_viewport_is_written_at_its_size() {
+        let dir = scratch("kept-small");
+        let output = dir.join("out.png");
+        let res = finalize_pixels(frame(480, 270), 480, 270, 640, 360, true, &output.to_string_lossy())
+            .expect("a kept frame is never upscaled, so any scale is fine");
+        assert_eq!((res.width, res.height, res.source_width, res.source_height), (480, 270, 480, 270));
+        let out = image::open(&output).unwrap();
+        assert_eq!((out.width(), out.height()), (480, 270));
     }
 
     #[test]
@@ -646,6 +674,14 @@ mod capture_collect_tests {
             entry("wob-1001", 20, 5, Some((2860, 1686))),
         ];
         assert_eq!(select_capture_file(&snapshot, &entries, 1430, 843), Selection::One("wob-1001".into()));
+    }
+
+    // ScaleToPhysicalSize below 1x: the frame has the viewport's shape at a
+    // smaller size, and is this capture's all the same.
+    #[test]
+    fn a_new_file_below_the_viewport_scale_is_selected() {
+        let entries = vec![entry("wob-1001", 20, 5, Some((1072, 632)))];
+        assert_eq!(select_capture_file(&HashMap::new(), &entries, 1430, 843), Selection::One("wob-1001".into()));
     }
 
     #[test]
