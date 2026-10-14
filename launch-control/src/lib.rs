@@ -417,10 +417,11 @@ impl Child {
     }
 
     /// For the next `window`, undo any activation the app grabs for itself
-    /// (macOS; no-op elsewhere). See `MacOSHandle::guard_focus`: an app that
-    /// activates itself mid-task — Studio does when a test session starts
-    /// or ends — has activation handed straight back to the app the user
-    /// was in, unless the user deliberately switched to it. Re-arming
+    /// (macOS and Windows; no-op elsewhere). See `MacOSHandle::guard_focus`
+    /// and `WindowsHandle::guard_focus`: an app that activates itself
+    /// mid-task — Studio does when it starts up and when a test session
+    /// starts or ends — has activation handed straight back to the app the
+    /// user was in, unless the user deliberately switched to it. Re-arming
     /// extends the window.
     pub fn guard_focus(&self, window: std::time::Duration) {
         #[cfg(target_os = "macos")]
@@ -429,7 +430,11 @@ impl Child {
                 inner.guard_focus(window);
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            self.inner.guard_focus(window);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = window;
         }

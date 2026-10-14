@@ -32,12 +32,19 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextLengthW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow,
-    GW_OWNER, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL,
+    BringWindowToTop, DispatchMessageW, EnumWindows, GetAncestor, GetForegroundWindow, GetWindow,
+    GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    MsgWaitForMultipleObjects, PeekMessageW, SetForegroundWindow, SetWindowPos, ShowWindow,
+    CHILDID_SELF, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER,
+    HWND_BOTTOM, MSG, OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, keybd_event, KEYEVENTF_KEYUP,
+};
 use keyboard_types::{Code, Modifiers};
 
 // Process access rights (literals to avoid feature-gated constant imports).
@@ -66,6 +73,7 @@ pub(crate) struct WindowsHandle {
     pid: u32,
     /// The job a non-detached app runs in; `None` for detached apps.
     job: Option<Arc<AppJob>>,
+    guard: Arc<FocusGuard>,
 }
 
 // HANDLE is Send+Sync safe on Windows (opaque kernel object reference).
@@ -208,6 +216,23 @@ impl WindowsHandle {
             force_foreground(prev_foreground);
         }
         Ok(())
+    }
+
+    /// For the next `window`, keep the app out of the user's way: the
+    /// Windows side of `MacOSHandle::guard_focus`. Windows gives only an
+    /// app's first window the launch's show state (a background launch:
+    /// minimized, inactive); Studio's later windows (its splash, its editor,
+    /// a play session's) come up above the user's, and take the foreground
+    /// whenever the OS lets them, minimized or not. While the guard is armed,
+    /// an app window that is foreground without a deliberate switch (see
+    /// `deliberate_input`) hands the foreground back to the window the user
+    /// was in and goes to the bottom of the z-order, as do app windows that
+    /// come up above the user's (bottom, not minimized: a minimized Studio
+    /// renders nothing to capture). The app is every process in its job, so
+    /// a play session's windows count. Re-arming extends the window; a
+    /// deliberate switch to the app ends it.
+    pub fn guard_focus(&self, window: Duration) {
+        arm_focus_guard(&self.guard, AppWindows { pid: self.pid, job: self.job.clone() }, window);
     }
 
     /// Kill returning io::Error (for Child::kill compatibility).
@@ -432,6 +457,15 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
         job.assign(pi.hProcess);
     }
 
+    // A background launch keeps the app's windows out of the user's way from
+    // its first window on (see `WindowsHandle::guard_focus`): Windows shows
+    // only that first window minimized and inactive, and Studio's splash comes
+    // up on top before adoption below has seen any window.
+    let guard: Arc<FocusGuard> = Default::default();
+    if cmd.background && !via_shell {
+        arm_focus_guard(&guard, AppWindows { pid: pi.dwProcessId, job: job.clone() }, LAUNCH_GUARD);
+    }
+
     // The launched process may be a bootstrapper that relaunches the real GUI
     // app as a separate process and then exits — Roblox Studio's
     // RobloxStudioBeta.exe does exactly this. Adopt the real, surviving editor
@@ -486,6 +520,7 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
             process_handle,
             pid,
             job,
+            guard,
         },
     })
 }
@@ -637,6 +672,20 @@ impl AppJob {
                 error = ?io::Error::last_os_error(),
                 "AssignProcessToJobObject failed; launched app won't be auto-killed when this process exits",
             );
+        }
+    }
+
+    /// Is process `pid` in the job?
+    fn contains(&self, pid: u32) -> bool {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut member: BOOL = 0;
+            let ok = IsProcessInJob(process, self.handle, &mut member);
+            CloseHandle(process);
+            ok != 0 && member != 0
         }
     }
 
@@ -1015,6 +1064,230 @@ fn force_foreground(hwnd: HWND) -> u32 {
         }
         pid
     }
+}
+
+/// How long a background launch's own focus guard lasts (callers re-arm it
+/// for the moments their app activates itself later).
+const LAUNCH_GUARD: Duration = Duration::from_secs(30);
+
+/// Arm `guard` over `app` for `window` (see `WindowsHandle::guard_focus`):
+/// extend a running guard, or start its thread.
+fn arm_focus_guard(guard: &Arc<FocusGuard>, app: AppWindows, window: Duration) {
+    let until = Instant::now() + window;
+    {
+        let mut state = guard.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.deadline = Some(state.deadline.map_or(until, |cur| cur.max(until)));
+        if state.running {
+            tracing::debug!(pid = app.pid, window_secs = window.as_secs(), "focus guard: extended");
+            return; // already watching; deadline extended above
+        }
+        state.running = true;
+    }
+    tracing::info!(pid = app.pid, window_secs = window.as_secs(), "focus guard: armed");
+    let guard = guard.clone();
+    let _ = std::thread::Builder::new()
+        .name("launch-control-focus-guard".into())
+        .spawn(move || {
+            // The user's window is the one in front as the guard arms, unless
+            // that is the app's own (a focused launch).
+            let front = unsafe { GetForegroundWindow() };
+            let prev = (!front.is_null() && !app.owns(front)).then_some(front as usize);
+            WATCH.with(|w| *w.borrow_mut() = Some(Watch { app, prev, deliberate_at: None, standing_down: false }));
+            // Events make the guard act at once: one of the app's windows
+            // shown, or any window taking the foreground. The tick between
+            // them is the backstop, and samples the input that marks a
+            // deliberate switch.
+            let hooks: Vec<HWINEVENTHOOK> = [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_SHOW]
+                .into_iter()
+                .map(|event| unsafe {
+                    SetWinEventHook(
+                        event,
+                        event,
+                        ptr::null_mut(),
+                        Some(on_win_event),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    )
+                })
+                .collect();
+            loop {
+                {
+                    let mut state = guard.state.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.deadline.map_or(true, |d| Instant::now() >= d) {
+                        state.running = false;
+                        break;
+                    }
+                }
+                // Out-of-context WinEvents arrive through this thread's
+                // message queue; pumping it runs `on_win_event`.
+                unsafe {
+                    MsgWaitForMultipleObjects(0, ptr::null(), 0, 50, QS_ALLINPUT);
+                    let mut msg: MSG = mem::zeroed();
+                    while PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                        DispatchMessageW(&msg);
+                    }
+                }
+                if !WATCH.with(|w| w.borrow_mut().as_mut().is_some_and(Watch::check)) {
+                    guard.state.lock().unwrap_or_else(|e| e.into_inner()).running = false;
+                    break;
+                }
+            }
+            for hook in hooks.into_iter().filter(|h| !h.is_null()) {
+                unsafe { UnhookWinEvent(hook) };
+            }
+            WATCH.with(|w| *w.borrow_mut() = None);
+        });
+}
+
+thread_local! {
+    /// The focus guard running on this thread, for `on_win_event`.
+    static WATCH: std::cell::RefCell<Option<Watch>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A focus guard's state on its thread.
+struct Watch {
+    app: AppWindows,
+    /// The user's window: in front as the guard armed, or deliberately
+    /// switched to since (as usize: a raw HWND isn't Send).
+    prev: Option<usize>,
+    deliberate_at: Option<Instant>,
+    standing_down: bool,
+}
+
+impl Watch {
+    /// Keep the app out of the way now: if it has the foreground, hand that
+    /// back to the user's window; send its windows that are above the user's
+    /// to the bottom. False once the user has deliberately switched to the
+    /// app, which ends the guard.
+    fn check(&mut self) -> bool {
+        if self.standing_down {
+            return false;
+        }
+        if deliberate_input() {
+            self.deliberate_at = Some(Instant::now());
+        }
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.is_null() {
+            return true;
+        }
+        // A keystroke being injected (`send_keystroke`) put the app in front
+        // on purpose, and its chord only lands while it stays there.
+        if matches!(KEYSTROKE_LOCK.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+            return true;
+        }
+        if self.app.owns(fg) {
+            if self.deliberate_at.is_some_and(|t| t.elapsed() < Duration::from_millis(500)) {
+                tracing::info!(pid = self.app.pid, "focus guard: user switched to the app; standing down");
+                self.standing_down = true;
+                return false;
+            }
+            // With no window of the user's seen since arming, the app had the
+            // foreground first (a focused launch): leave it there.
+            if let Some(p) = self.prev {
+                force_foreground(p as HWND);
+                if unsafe { IsIconic(fg) } == 0 {
+                    send_to_bottom(fg);
+                }
+                tracing::info!(pid = self.app.pid, "focus guard: app took the foreground; handed back");
+            }
+        } else {
+            // A window the user switched to is theirs. One that came forward
+            // on its own is not: often it's another guarded app (a second
+            // Studio, or one rodeo foregrounds to type into it), and handing
+            // the foreground back to that would have two guards trade it
+            // back and forth.
+            if self.deliberate_at.is_some_and(|t| t.elapsed() < Duration::from_millis(500)) {
+                self.prev = Some(fg as usize);
+            }
+            if self.prev == Some(fg as usize) {
+                self.app.send_down_from_above(fg);
+            }
+        }
+        true
+    }
+}
+
+/// WinEvent callback for a focus guard's hooks: run its check when a window
+/// takes the foreground, or when one of the app's top-level windows is shown.
+unsafe extern "system" fn on_win_event(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if hwnd.is_null() || id_object != OBJID_WINDOW || id_child != CHILDID_SELF as i32 {
+        return;
+    }
+    WATCH.with(|w| {
+        // Re-entered from inside a check (pumping while it switches windows): skip.
+        let Ok(mut w) = w.try_borrow_mut() else { return };
+        let Some(watch) = w.as_mut() else { return };
+        if event == EVENT_OBJECT_SHOW && (GetAncestor(hwnd, GA_ROOT) != hwnd || !watch.app.owns(hwnd)) {
+            return;
+        }
+        watch.check();
+    });
+}
+
+/// Shared state of a handle's focus guard (see `WindowsHandle::guard_focus`).
+#[derive(Default)]
+pub(crate) struct FocusGuard {
+    /// One lock for both, so arming never races the guard thread's exit.
+    state: std::sync::Mutex<GuardState>,
+}
+
+#[derive(Default)]
+struct GuardState {
+    deadline: Option<Instant>,
+    running: bool,
+}
+
+/// The windows a focus guard keeps out of the way: those of the app's
+/// process, or of any process in its job (a play session's Studios too).
+struct AppWindows {
+    pid: u32,
+    job: Option<Arc<AppJob>>,
+}
+
+impl AppWindows {
+    fn owns(&self, hwnd: HWND) -> bool {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        pid != 0 && (pid == self.pid || self.job.as_ref().is_some_and(|job| job.contains(pid)))
+    }
+
+    /// Send the app's visible windows above `user` (the user's foreground
+    /// window) to the bottom of the z-order.
+    fn send_down_from_above(&self, user: HWND) {
+        let mut w = unsafe { GetWindow(user, GW_HWNDPREV) };
+        while !w.is_null() {
+            let above = unsafe { GetWindow(w, GW_HWNDPREV) };
+            if unsafe { IsWindowVisible(w) } != 0 && unsafe { IsIconic(w) } == 0 && self.owns(w) {
+                send_to_bottom(w);
+            }
+            w = above;
+        }
+    }
+}
+
+/// Move `hwnd` to the bottom of the z-order without activating it.
+fn send_to_bottom(hwnd: HWND) {
+    unsafe { SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+}
+
+/// Is the user doing something that switches windows: a mouse button (a
+/// click on a window or taskbar button), Alt (Alt+Tab) or a Windows key,
+/// down now or pressed since the last check? Typing doesn't count: that is
+/// what the user is doing when an app steals the foreground.
+fn deliberate_input() -> bool {
+    const KEYS: [i32; 6] = [0x01, 0x02, 0x04, 0x12, 0x5B, 0x5C]; // L/R/M button, Alt, L/R Win
+    // Query every key, not just up to the first hit, so each one's
+    // pressed-since-last-check bit stays current.
+    KEYS.iter().fold(false, |any, &vk| any | (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8001 != 0))
 }
 
 /// Map a `keyboard_types::Code` to a Windows virtual-key code (`bVk` for
