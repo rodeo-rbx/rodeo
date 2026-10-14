@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,16 @@ const PREV_PORT = 46790; // matches prev/.mise.toml; passed explicitly (pre-1.5 
 const PREV_VERSION_PREFIX = "rodeo 1.4.0-rc.4"; // keep in step with prev/.mise.toml
 
 const mise = Bun.which("mise");
+
+// The old releases below write the shared legacy plugin file, and every Studio
+// opened afterwards loads it beside this build's plugin: it dials whatever
+// serve the launch names, from every DataModel. Remove it after this file
+// unless it was already installed (an older rodeo in use on this machine).
+const LEGACY_PLUGIN = join(pluginsDir(), "rodeo.rbxm");
+const legacyPluginInstalled = existsSync(LEGACY_PLUGIN);
+afterAll(() => {
+  if (!legacyPluginInstalled) rmSync(LEGACY_PLUGIN, { force: true });
+});
 
 function sh(cmd: string[], cwd?: string, timeout = 180_000): { ok: boolean; stdout: string; stderr: string; timedOut: boolean } {
   const r = Bun.spawnSync(cmd, { cwd, timeout });
@@ -141,7 +151,7 @@ describe.skipIf(!mise)("two rodeo versions side by side (CLI)", () => {
 
     // The previous release wrote the shared legacy file; this build never
     // removes it.
-    expect(existsSync(join(pluginsDir(), "rodeo.rbxm"))).toBe(true);
+    expect(existsSync(LEGACY_PLUGIN)).toBe(true);
   });
 
   it("run --place refuses another build's serve before launching a Studio onto it", async () => {
