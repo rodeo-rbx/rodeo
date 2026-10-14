@@ -36,7 +36,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DispatchMessageW, EnumWindows, GetAncestor, GetClassNameW,
-    GetForegroundWindow, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetForegroundWindow, GetLastActivePopup, GetWindow, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, MsgWaitForMultipleObjects, PeekMessageW,
     SetForegroundWindow, SetWindowPos, ShowWindow, CHILDID_SELF, EVENT_OBJECT_SHOW,
     EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER, HWND_BOTTOM, MSG, OBJID_WINDOW,
@@ -63,6 +63,10 @@ const SYNCHRONIZE: u32 = 0x0010_0000;
 /// steal focus from each other and interleave their chords — dropping the
 /// keystroke entirely. See `WindowsHandle::send_keystroke`.
 static KEYSTROKE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How long a keystroke waits for a modal dialog to close before reporting
+/// it. Studio's loading dialog closes within about 2 s.
+const MODAL_GRACE: Duration = Duration::from_secs(5);
 
 /// How long to wait for the real GUI process to appear after a bootstrapper
 /// handoff before giving up and tracking the originally-launched process.
@@ -147,6 +151,19 @@ impl WindowsHandle {
         let vk = code_to_vk(code).ok_or(Error::Unsupported)?;
         let hwnd = find_main_window_by_pid(self.pid)
             .ok_or_else(|| Error::Platform("no window found for process".into()))?;
+
+        // A modal dialog disables the window it belongs to, and a keystroke
+        // sent then lands in the dialog. Studio shows one briefly while a place
+        // loads; one that stays is waiting on the user, so say which it is
+        // instead of typing into it (and without bringing anything forward).
+        let modal_deadline = Instant::now() + MODAL_GRACE;
+        while unsafe { IsWindowEnabled(hwnd) } == 0 {
+            if Instant::now() >= modal_deadline {
+                let dialog = unsafe { GetLastActivePopup(hwnd) };
+                return Err(Error::DialogOpen(window_title(dialog)));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
 
         // Hold the global keystroke lock across the whole focus→inject→restore
         // so concurrent injections (e.g. saving multiple Studios at once) don't
@@ -1132,16 +1149,21 @@ fn find_main_window_by_pid(target_pid: u32) -> Option<HWND> {
     data.found_hwnd
 }
 
+/// `hwnd`'s title bar text.
+fn window_title(hwnd: HWND) -> String {
+    let mut title = [0u16; 128];
+    let len = unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) }.max(0) as usize;
+    String::from_utf16_lossy(&title[..len])
+}
+
 /// `hwnd`'s title, class and state, for logs.
 fn describe_window(hwnd: HWND) -> String {
-    let mut title = [0u16; 128];
     let mut class = [0u16; 64];
     unsafe {
-        let title_len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
         let class_len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
         format!(
             "{hwnd:?} {:?} [{}] enabled={} iconic={} owner={:?}",
-            String::from_utf16_lossy(&title[..title_len]),
+            window_title(hwnd),
             String::from_utf16_lossy(&class[..class_len]),
             IsWindowEnabled(hwnd) != 0,
             IsIconic(hwnd) != 0,

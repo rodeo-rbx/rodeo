@@ -11,6 +11,8 @@ pub enum Error {
     Terminated,
     /// Operation not supported on this platform
     Unsupported,
+    /// A modal dialog of the app's (its title) blocks its main window
+    DialogOpen(String),
 }
 
 impl fmt::Display for Error {
@@ -20,6 +22,7 @@ impl fmt::Display for Error {
             Error::Platform(msg) => write!(f, "platform error: {msg}"),
             Error::Terminated => write!(f, "application has terminated"),
             Error::Unsupported => write!(f, "operation not supported on this platform"),
+            Error::DialogOpen(title) => write!(f, "the app's dialog {title:?} is open, blocking its window"),
         }
     }
 }
@@ -33,6 +36,7 @@ impl From<Error> for io::Error {
             Error::Platform(msg) => io::Error::new(io::ErrorKind::Other, msg),
             Error::Terminated => io::Error::new(io::ErrorKind::BrokenPipe, "application has terminated"),
             Error::Unsupported => io::Error::new(io::ErrorKind::Unsupported, "operation not supported on this platform"),
+            Error::DialogOpen(title) => io::Error::new(io::ErrorKind::Other, format!("dialog {title:?} is open")),
         }
     }
 }

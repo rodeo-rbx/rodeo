@@ -498,9 +498,22 @@ async fn handle_master_msg(
                         let mut ticks = 0u32;
                         let mut attempts = 0u32;
                         let mut last_err: Option<String> = None;
+                        let mut blocked = false;
                         'retry: while std::time::Instant::now() < deadline {
                             attempts += 1;
                             if let Err(e) = studio.save() {
+                                // A dialog waiting on the user doesn't go away by
+                                // retrying: report it now, by name.
+                                if let Some(launch_control::Error::DialogOpen(title)) =
+                                    e.chain().find_map(|c| c.downcast_ref::<launch_control::Error>())
+                                {
+                                    tracing::warn!(session_guid = sg_short.as_str(), dialog = title.as_str(), "save: a Studio dialog blocks the editor");
+                                    last_err = Some(format!(
+                                        "Studio is showing a dialog ({title:?}) that blocks saving; answer it in Studio, then save again"
+                                    ));
+                                    blocked = true;
+                                    break 'retry;
+                                }
                                 last_err = Some(e.to_string());
                                 tracing::warn!(session_guid = sg_short.as_str(), attempts, "save: keystroke attempt failed: {e}");
                             }
@@ -523,7 +536,9 @@ async fn handle_master_msg(
                             tracing::info!(session_guid = sg_short.as_str(), ticks, attempts, "save: mtime changed, success");
                             (true, Some(path.to_string_lossy().into_owned()), None)
                         } else {
-                            tracing::warn!(session_guid = sg_short.as_str(), ticks, attempts, "save: timed out waiting for mtime change");
+                            if !blocked {
+                                tracing::warn!(session_guid = sg_short.as_str(), ticks, attempts, "save: timed out waiting for mtime change");
+                            }
                             (false, Some(path.to_string_lossy().into_owned()),
                              last_err.or_else(|| Some("mtime did not change within 60s".to_string())))
                         }
