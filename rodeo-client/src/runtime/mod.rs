@@ -1,7 +1,9 @@
+pub mod adapter;
 pub mod fs;
 pub mod process;
 pub mod roblox;
 pub mod mesh;
+pub mod runtimes;
 pub mod scene;
 pub mod stream;
 
@@ -135,10 +137,13 @@ pub struct RpcState {
     /// keyed by token, consumed by the matching `roblox.captureCollect`.
     pub capture_snapshots: HashMap<String, roblox::CaptureSnapshot>,
     pub next_capture_token: u64,
+    /// The Lune/Lute processes behind `--adapter` modules, started on first use.
+    pub bridges: Arc<adapter::Bridges>,
 }
 
 impl RpcState {
     pub fn new(captured_output_tx: CapturedOutputSender) -> Self {
+        let bridges = Arc::new(adapter::Bridges::new(captured_output_tx.clone()));
         let mut state = Self {
             stream_handlers: HashMap::new(),
             child_processes: HashMap::new(),
@@ -148,6 +153,7 @@ impl RpcState {
             captured_output_tx,
             capture_snapshots: HashMap::new(),
             next_capture_token: 0,
+            bridges,
         };
         state.stream_handlers.insert("stdout".to_string(), StreamHandler::Stdout);
         state.stream_handlers.insert("stderr".to_string(), StreamHandler::Stderr);
@@ -252,6 +258,9 @@ pub async fn dispatch_client(
         Some(Req::RobloxSimulatorApply(_)) | Some(Req::RobloxSimulatorRestore(_)) => Some(Res::Error(
             "roblox.captureViewport device/viewportSize need a rodeo plugin that handles simulator RPCs; restart serve so the plugin matches this rodeo".to_string(),
         )),
+
+        // adapter (runtime bridge)
+        Some(Req::AdapterCall(r)) => async_arm("adapter.call", id, adapter::adapter_call(state.clone(), id, r), Res::AdapterCall).await,
 
         None => Some(Res::Error("missing req".to_string())),
     };

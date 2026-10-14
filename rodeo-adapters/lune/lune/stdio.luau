@@ -1,18 +1,29 @@
--- @lune/stdio shim — maps to rodeo's stream.write(io.stderr/stdout, ...)
-local g = _G.__rodeo_procs[_G.__rodeo_eid]
+-- @lune/stdio: Lune's own, from the Lune process behind this run
+-- (`--adapter lune`), except reading and writing this run's stdin, stdout and
+-- stderr, which stay in order with print.
+local bridge = require("@rodeo-bridge")
+local rodeo = bridge.apis()
 
--- Members the shim does not provide (color, style, format, readLine,
--- readToEnd, prompt) raise an error naming them, instead of indexing to nil
--- and failing later as "attempt to call a nil value".
-return setmetatable({
-	ewrite = function(s: string)
-		g.stream.write(g.io.stderr, s)
-	end,
-	write = function(s: string)
-		g.stream.write(g.io.stdout, s)
-	end,
-}, {
-	__index = function(_, key)
-		error(`@lune/stdio.{key} is not supported by rodeo's Lune adapter`, 2)
-	end,
-})
+local function writer(handle)
+	return function(s: string | buffer)
+		if type(s) == "buffer" then
+			rodeo.stream.writeBytes(handle, s)
+		else
+			rodeo.stream.write(handle, s)
+		end
+	end
+end
+
+local stdio = table.clone(bridge.module("lune", "@lune/stdio"))
+stdio.write = writer(rodeo.io.stdout)
+stdio.ewrite = writer(rodeo.io.stderr)
+
+function stdio.readLine(): string
+	return (string.gsub(rodeo.io.read(), "\r?\n$", ""))
+end
+
+function stdio.readToEnd(): string
+	return buffer.tostring(rodeo.stream.readBytes(rodeo.io.stdin))
+end
+
+return table.freeze(stdio)

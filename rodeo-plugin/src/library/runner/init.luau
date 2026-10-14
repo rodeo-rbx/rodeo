@@ -68,6 +68,7 @@ local apis = {
 	fs = fsApi,
 	io = require(ref("io"))(rpc, runtime),
 	process = processApi,
+	adapter = require(ref("adapter"))(rpc, runtime),
 	stream = streamApi,
 	roblox = require(ref("roblox"))(
 		rpc,

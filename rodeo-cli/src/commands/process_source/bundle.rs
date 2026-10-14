@@ -244,7 +244,16 @@ mod tests {
                 verbose: false,
                 adapters: adapters.iter().map(|a| a.to_string()).collect(),
             };
-            bundle(self.0.join(entry).to_str().unwrap(), &options)
+            let entry = self.0.join(entry).to_str().unwrap().to_string();
+            // darklua recurses deeply over the adapters' modules; an unoptimized
+            // build needs more than a test thread's stack (rodeo bundles on its
+            // `__process_source` process's main thread).
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn(move || bundle(&entry, &options))
+                .unwrap()
+                .join()
+                .unwrap()
         }
     }
 
@@ -326,13 +335,12 @@ mod tests {
     }
 
     #[test]
-    fn a_lute_module_with_no_rodeo_implementation_still_bundles() {
-        // It errors when required in Studio; bundling must not fail first.
+    fn a_lute_module_bundles_as_a_call_to_lute() {
         let scratch = Scratch::new(&[("main.luau", "return require('@lute/net/client')")]);
 
         let bundled = scratch.bundle_with("main.luau", &["lute"]).unwrap();
 
-        assert!(bundled.contains("is not supported by rodeo's Lute adapter"), "{bundled}");
+        assert!(bundled.contains(r#"module("lute", "@lute/net/client")"#), "{bundled}");
     }
 
     #[test]

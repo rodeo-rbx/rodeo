@@ -48,8 +48,6 @@ pub fn process_get_info(_req: &rt::ProcessGetInfoRequest) -> Result<rt::ProcessG
         platform: Some(std::env::consts::OS.to_string()),
         arch: Some(std::env::consts::ARCH.to_string()),
         studio_content_path: studio_content_path(),
-        tmpdir: Some(std::env::temp_dir().to_string_lossy().to_string()),
-        thread_count: std::thread::available_parallelism().ok().map(|n| n.get() as u32),
         ..Default::default()
     })
 }

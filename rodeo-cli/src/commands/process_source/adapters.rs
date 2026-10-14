@@ -7,6 +7,9 @@
 //! `rodeo-pkg/rodeo/shims/`). Bundling writes the trees a run uses to disk and
 //! points darklua's aliases at them, so they bundle like the script's own
 //! modules. Adding an adapter or a module is a matter of adding files.
+//!
+//! Most adapter modules hand their work to the real runtime through
+//! `@rodeo-bridge` (`rodeo-adapters/_bridge/`), which comes with any adapter.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -36,10 +39,14 @@ fn find(name: &str) -> Result<&'static Adapter> {
     }
 }
 
-/// Writes `@rodeo` and the alias trees of `adapters` under `dir`, returning
-/// each alias with the absolute folder that now holds its modules.
+/// Writes `@rodeo` and the alias trees of `adapters` (with `@rodeo-bridge`)
+/// under `dir`, returning each alias with the absolute folder that now holds
+/// its modules.
 pub fn write_alias_trees(dir: &Path, adapters: &[String]) -> Result<Vec<(&'static str, PathBuf)>> {
     let mut trees: Vec<&'static AliasTree> = vec![&RODEO];
+    if !adapters.is_empty() {
+        trees.push(&BRIDGE);
+    }
     let mut enabled: Vec<&str> = Vec::new();
     for name in adapters {
         if enabled.contains(&name.as_str()) {
@@ -78,7 +85,7 @@ mod tests {
 
     #[test]
     fn rodeo_and_each_adapter_alias_are_distinct() {
-        let mut aliases = vec![RODEO.alias];
+        let mut aliases = vec![RODEO.alias, BRIDGE.alias];
         for adapter in ADAPTERS {
             for tree in adapter.aliases {
                 assert!(!aliases.contains(&tree.alias), "{} is provided twice", tree.alias);

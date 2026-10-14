@@ -301,8 +301,19 @@ message ProcessGetInfoResponse {
   optional string platform = 5;
   optional string arch = 6;
   optional string studio_content_path = 7;
-  optional string tmpdir = 8;        // the host's temporary directory
-  optional uint32 thread_count = 9;  // logical CPU threads available on the host
+}
+
+// One message to a runtime bridge (`--adapter`): the run client relays
+// `payload` to that runtime's process for this run, starting it on the first
+// call, and returns its reply. The bytes are the bridge's own format
+// (rodeo-adapters/_bridge/codec.luau); the run client doesn't read them.
+message AdapterCallRequest {
+  string runtime = 1;  // "lune" | "lute"
+  bytes payload = 2;
+}
+
+message AdapterCallResponse {
+  bytes payload = 1;
 }
 
 message ProcessExitRequest {
@@ -421,6 +432,9 @@ message ClientRpcCall {
     RobloxSceneEncodeRequest       roblox_scene_encode      = 61;
     RobloxCaptureBeginRequest      roblox_capture_begin     = 58;
     RobloxCaptureCollectRequest    roblox_capture_collect   = 59;
+
+    // adapter (runtime bridge, `--adapter`)
+    AdapterCallRequest             adapter_call             = 70;
   }
 }
 
@@ -479,5 +493,7 @@ message ClientRpcResponse {
     Ok                            roblox_scene_encode      = 61;
     RobloxCaptureBeginResponse     roblox_capture_begin     = 58;
     RobloxCaptureCollectResponse   roblox_capture_collect   = 59;
+
+    AdapterCallResponse            adapter_call             = 70;
   }
 }

@@ -310,7 +310,9 @@ async fn message_loop(
     // land in `event_tx` before `Done`.
     let (capture_tx, mut capture_rx) =
         mpsc::unbounded_channel::<(runtime::CapturedStreamKind, Vec<u8>)>();
-    let rpc_state = Arc::new(Mutex::new(runtime::RpcState::new(capture_tx)));
+    let rpc_state = runtime::RpcState::new(capture_tx);
+    let bridges = rpc_state.bridges.clone();
+    let rpc_state = Arc::new(Mutex::new(rpc_state));
     let forward_captured = |kind: runtime::CapturedStreamKind, bytes: Vec<u8>| {
         let chunk = String::from_utf8_lossy(&bytes).into_owned();
         let _ = event_tx.send(RunStreamEvent::Output { kind, chunk });
@@ -341,6 +343,9 @@ async fn message_loop(
                                     });
                                 }
                                 proto::run_event::Event::RpcCall(call) => {
+                                    // Queued now, so a runtime bridge gets the script's
+                                    // calls in order: the tasks answering them run in any.
+                                    bridges.enqueue(&call);
                                     let state = rpc_state.clone();
                                     let tx = response_tx.clone();
                                     let observer = event_tx.clone();
@@ -375,6 +380,10 @@ async fn message_loop(
                                 }
                                 proto::run_event::Event::ExecutionDone(done) => {
                                     if !done.success { exit_code = 1; ok = false; }
+                                    // The script is done: a call still waiting on a
+                                    // runtime (a thread it left reading a socket) must
+                                    // not hold up the result below.
+                                    bridges.stop();
                                     let (rpc_exit, exit_requested) = {
                                         let st = rpc_state.lock().await;
                                         (st.exit_code, st.exit_requested)
@@ -414,6 +423,7 @@ async fn message_loop(
                                     // deliberate kill blow up).
                                     // Exception: a kill the client itself initiated for
                                     // process.exit resolves to the script's requested code.
+                                    bridges.stop();
                                     let (rpc_exit, exit_requested) = {
                                         let st = rpc_state.lock().await;
                                         (st.exit_code, st.exit_requested)
@@ -549,6 +559,7 @@ async fn message_loop(
     }
 
     // Flush any open stream handlers to disk (matches the CLI's flush_streams).
+    bridges.stop();
     let mut guard = rpc_state.lock().await;
     let handles: Vec<String> = guard.stream_handlers.keys().cloned().collect();
     for handle in handles {

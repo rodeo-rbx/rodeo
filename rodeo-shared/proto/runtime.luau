@@ -56,6 +56,8 @@ type _Messages = {
 	ProcessGetInfoRequest: _ProcessGetInfoRequestMessage,
 	ProcessGetInfoResponse: _ProcessGetInfoResponseMessage,
 	ProcessGetInfoResponse_EnvEntry: _ProcessGetInfoResponse_EnvEntryMessage,
+	AdapterCallRequest: _AdapterCallRequestMessage,
+	AdapterCallResponse: _AdapterCallResponseMessage,
 	ProcessExitRequest: _ProcessExitRequestMessage,
 	ProcessRunRequest: _ProcessRunRequestMessage,
 	ProcessRunResponse: _ProcessRunResponseMessage,
@@ -1251,8 +1253,6 @@ type _ProcessGetInfoResponseFields = {
 	platform: string?,
 	arch: string?,
 	studioContentPath: string?,
-	tmpdir: string?,
-	threadCount: number?,
 }
 
 export type _ProcessGetInfoResponsePartialFields = {
@@ -1263,8 +1263,6 @@ export type _ProcessGetInfoResponsePartialFields = {
 	platform: string?,
 	arch: string?,
 	studioContentPath: string?,
-	tmpdir: string?,
-	threadCount: number?,
 }
 
 export type ProcessGetInfoResponse = typeof(setmetatable(
@@ -1301,6 +1299,50 @@ type _ProcessGetInfoResponse_EnvEntryMessage = proto.Message<
 	ProcessGetInfoResponse_EnvEntry,
 	_ProcessGetInfoResponse_EnvEntryPartialFields
 >
+
+type _AdapterCallRequestImpl = {
+	__index: _AdapterCallRequestImpl,
+	new: (fields: _AdapterCallRequestPartialFields?) -> AdapterCallRequest,
+	encode: (self: AdapterCallRequest) -> buffer,
+	decode: (input: buffer) -> AdapterCallRequest,
+	jsonEncode: (self: AdapterCallRequest) -> { [string]: any },
+	jsonDecode: (input: { [string]: any }) -> AdapterCallRequest,
+	descriptor: proto.Descriptor,
+}
+
+type _AdapterCallRequestFields = {
+	runtime: string,
+	payload: buffer,
+}
+
+export type _AdapterCallRequestPartialFields = {
+	runtime: string?,
+	payload: buffer?,
+}
+
+export type AdapterCallRequest = typeof(setmetatable({} :: _AdapterCallRequestFields, {} :: _AdapterCallRequestImpl))
+type _AdapterCallRequestMessage = proto.Message<AdapterCallRequest, _AdapterCallRequestPartialFields>
+
+type _AdapterCallResponseImpl = {
+	__index: _AdapterCallResponseImpl,
+	new: (fields: _AdapterCallResponsePartialFields?) -> AdapterCallResponse,
+	encode: (self: AdapterCallResponse) -> buffer,
+	decode: (input: buffer) -> AdapterCallResponse,
+	jsonEncode: (self: AdapterCallResponse) -> { [string]: any },
+	jsonDecode: (input: { [string]: any }) -> AdapterCallResponse,
+	descriptor: proto.Descriptor,
+}
+
+type _AdapterCallResponseFields = {
+	payload: buffer,
+}
+
+export type _AdapterCallResponsePartialFields = {
+	payload: buffer?,
+}
+
+export type AdapterCallResponse = typeof(setmetatable({} :: _AdapterCallResponseFields, {} :: _AdapterCallResponseImpl))
+type _AdapterCallResponseMessage = proto.Message<AdapterCallResponse, _AdapterCallResponsePartialFields>
 
 type _ProcessExitRequestImpl = {
 	__index: _ProcessExitRequestImpl,
@@ -1597,6 +1639,7 @@ type _ClientRpcCallFields = {
 		| { type: "robloxSceneEncode", value: RobloxSceneEncodeRequest }
 		| { type: "robloxCaptureBegin", value: RobloxCaptureBeginRequest }
 		| { type: "robloxCaptureCollect", value: RobloxCaptureCollectRequest }
+		| { type: "adapterCall", value: AdapterCallRequest }
 	)?,
 }
 
@@ -1648,6 +1691,7 @@ export type _ClientRpcCallPartialFields = {
 			type: "robloxCaptureCollect",
 			value: RobloxCaptureCollectRequest | _RobloxCaptureCollectRequestPartialFields,
 		}
+		| { type: "adapterCall", value: AdapterCallRequest | _AdapterCallRequestPartialFields }
 	)?,
 }
 
@@ -1704,6 +1748,7 @@ type _ClientRpcResponseFields = {
 		| { type: "robloxSceneEncode", value: Ok }
 		| { type: "robloxCaptureBegin", value: RobloxCaptureBeginResponse }
 		| { type: "robloxCaptureCollect", value: RobloxCaptureCollectResponse }
+		| { type: "adapterCall", value: AdapterCallResponse }
 	)?,
 }
 
@@ -1753,6 +1798,7 @@ export type _ClientRpcResponsePartialFields = {
 			type: "robloxCaptureCollect",
 			value: RobloxCaptureCollectResponse | _RobloxCaptureCollectResponsePartialFields,
 		}
+		| { type: "adapterCall", value: AdapterCallResponse | _AdapterCallResponsePartialFields }
 	)?,
 }
 
@@ -7145,8 +7191,6 @@ do
 			platform = if data == nil or data.platform == nil then nil else data.platform,
 			arch = if data == nil or data.arch == nil then nil else data.arch,
 			studioContentPath = if data == nil or data.studioContentPath == nil then nil else data.studioContentPath,
-			tmpdir = if data == nil or data.tmpdir == nil then nil else data.tmpdir,
-			threadCount = if data == nil or data.threadCount == nil then nil else data.threadCount,
 		}, _ProcessGetInfoResponseImpl :: _ProcessGetInfoResponseImpl)
 	end
 
@@ -7198,16 +7242,6 @@ do
 			output, cursor = proto.writeString(output, cursor, self.studioContentPath)
 		end
 
-		if self.tmpdir ~= nil then
-			output, cursor = proto.writeTag(output, cursor, 8, proto.wireTypes.lengthDelimited)
-			output, cursor = proto.writeString(output, cursor, self.tmpdir)
-		end
-
-		if self.threadCount ~= nil then
-			output, cursor = proto.writeTag(output, cursor, 9, proto.wireTypes.varint)
-			output, cursor = proto.writeVarInt(output, cursor, self.threadCount)
-		end
-
 		local shrunkBuffer = buffer.create(cursor)
 		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
 		return shrunkBuffer
@@ -7222,12 +7256,7 @@ do
 			field, wireType, cursor = proto.readTag(input, cursor)
 
 			if wireType == proto.wireTypes.varint then
-				if field == 9 then
-					local value
-					value, cursor = proto.readVarIntU32(input, cursor)
-					self.threadCount = value
-					continue
-				end
+				-- No fields
 
 				local _
 				_, cursor = proto.readVarInt(input, cursor)
@@ -7273,11 +7302,6 @@ do
 					local value
 					value, cursor = proto.readBuffer(input, cursor)
 					self.studioContentPath = proto.decodeString(value)
-					continue
-				elseif field == 8 then
-					local value
-					value, cursor = proto.readBuffer(input, cursor)
-					self.tmpdir = proto.decodeString(value)
 					continue
 				end
 
@@ -7339,14 +7363,6 @@ do
 			output.studioContentPath = self.studioContentPath
 		end
 
-		if self.tmpdir ~= nil then
-			output.tmpdir = self.tmpdir
-		end
-
-		if self.threadCount ~= nil then
-			output.threadCount = self.threadCount
-		end
-
 		return output
 	end
 
@@ -7384,14 +7400,6 @@ do
 
 		if input.studioContentPath ~= nil then
 			self.studioContentPath = input.studioContentPath
-		end
-
-		if input.tmpdir ~= nil then
-			self.tmpdir = input.tmpdir
-		end
-
-		if input.threadCount ~= nil then
-			self.threadCount = input.threadCount
 		end
 
 		return self
@@ -7523,6 +7531,219 @@ do
 	messages.ProcessGetInfoResponse_EnvEntry = _ProcessGetInfoResponse_EnvEntryImpl :: any -- Luau: Not sure why this intersection fails.
 
 	typeRegistry.default:register(messages.ProcessGetInfoResponse_EnvEntry)
+end
+
+do
+	local _AdapterCallRequestImpl = {}
+	_AdapterCallRequestImpl.__index = _AdapterCallRequestImpl
+
+	function _AdapterCallRequestImpl.new(data: _AdapterCallRequestPartialFields?): AdapterCallRequest
+		return setmetatable({
+			runtime = if data == nil or data.runtime == nil then "" else data.runtime,
+			payload = if data == nil or data.payload == nil then buffer.create(0) else data.payload,
+		}, _AdapterCallRequestImpl :: _AdapterCallRequestImpl)
+	end
+
+	function _AdapterCallRequestImpl.encode(self: AdapterCallRequest): buffer
+		local output = buffer.create(0)
+		local cursor = 0
+
+		if self.runtime ~= nil and self.runtime ~= "" then
+			output, cursor = proto.writeTag(output, cursor, 1, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeString(output, cursor, self.runtime)
+		end
+
+		if self.payload ~= nil and buffer.len(self.payload) > 0 then
+			output, cursor = proto.writeTag(output, cursor, 2, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeBuffer(output, cursor, self.payload, buffer.len(self.payload))
+		end
+
+		local shrunkBuffer = buffer.create(cursor)
+		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
+		return shrunkBuffer
+	end
+
+	function _AdapterCallRequestImpl.decode(input: buffer): AdapterCallRequest
+		local self = _AdapterCallRequestImpl.new()
+		local cursor = 0
+
+		while cursor < buffer.len(input) do
+			local field, wireType
+			field, wireType, cursor = proto.readTag(input, cursor)
+
+			if wireType == proto.wireTypes.varint then
+				-- No fields
+
+				local _
+				_, cursor = proto.readVarInt(input, cursor)
+			elseif wireType == proto.wireTypes.lengthDelimited then
+				if field == 1 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.runtime = proto.decodeString(value)
+					continue
+				elseif field == 2 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.payload = value
+					continue
+				end
+
+				local length
+				length, cursor = proto.readVarInt(input, cursor)
+
+				cursor += length
+			elseif wireType == proto.wireTypes.i32 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed32(input, cursor)
+			elseif wireType == proto.wireTypes.i64 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed64(input, cursor)
+			else
+				error("Unsupported wire type: " .. wireType)
+			end
+		end
+
+		return self
+	end
+
+	function _AdapterCallRequestImpl.jsonEncode(self: AdapterCallRequest): any
+		local output = {}
+
+		if self.runtime ~= nil and self.runtime ~= "" then
+			output.runtime = self.runtime
+		end
+
+		if self.payload ~= nil and buffer.len(self.payload) > 0 then
+			output.payload = proto.json.serializeBuffer(self.payload)
+		end
+
+		return output
+	end
+
+	function _AdapterCallRequestImpl.jsonDecode(input: { [string]: any }): AdapterCallRequest
+		local self = _AdapterCallRequestImpl.new()
+
+		if input.runtime ~= nil then
+			self.runtime = input.runtime
+		end
+
+		if input.payload ~= nil then
+			self.payload = proto.json.deserializeBuffer(input.payload)
+		end
+
+		return self
+	end
+
+	_AdapterCallRequestImpl.descriptor = {
+		name = "AdapterCallRequest",
+		fullName = "rodeo.runtime.AdapterCallRequest",
+	}
+
+	messages.AdapterCallRequest = _AdapterCallRequestImpl :: any -- Luau: Not sure why this intersection fails.
+
+	typeRegistry.default:register(messages.AdapterCallRequest)
+end
+
+do
+	local _AdapterCallResponseImpl = {}
+	_AdapterCallResponseImpl.__index = _AdapterCallResponseImpl
+
+	function _AdapterCallResponseImpl.new(data: _AdapterCallResponsePartialFields?): AdapterCallResponse
+		return setmetatable({
+			payload = if data == nil or data.payload == nil then buffer.create(0) else data.payload,
+		}, _AdapterCallResponseImpl :: _AdapterCallResponseImpl)
+	end
+
+	function _AdapterCallResponseImpl.encode(self: AdapterCallResponse): buffer
+		local output = buffer.create(0)
+		local cursor = 0
+
+		if self.payload ~= nil and buffer.len(self.payload) > 0 then
+			output, cursor = proto.writeTag(output, cursor, 1, proto.wireTypes.lengthDelimited)
+			output, cursor = proto.writeBuffer(output, cursor, self.payload, buffer.len(self.payload))
+		end
+
+		local shrunkBuffer = buffer.create(cursor)
+		buffer.copy(shrunkBuffer, 0, output, 0, cursor)
+		return shrunkBuffer
+	end
+
+	function _AdapterCallResponseImpl.decode(input: buffer): AdapterCallResponse
+		local self = _AdapterCallResponseImpl.new()
+		local cursor = 0
+
+		while cursor < buffer.len(input) do
+			local field, wireType
+			field, wireType, cursor = proto.readTag(input, cursor)
+
+			if wireType == proto.wireTypes.varint then
+				-- No fields
+
+				local _
+				_, cursor = proto.readVarInt(input, cursor)
+			elseif wireType == proto.wireTypes.lengthDelimited then
+				if field == 1 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.payload = value
+					continue
+				end
+
+				local length
+				length, cursor = proto.readVarInt(input, cursor)
+
+				cursor += length
+			elseif wireType == proto.wireTypes.i32 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed32(input, cursor)
+			elseif wireType == proto.wireTypes.i64 then
+				-- No fields
+
+				local _
+				_, cursor = proto.readFixed64(input, cursor)
+			else
+				error("Unsupported wire type: " .. wireType)
+			end
+		end
+
+		return self
+	end
+
+	function _AdapterCallResponseImpl.jsonEncode(self: AdapterCallResponse): any
+		local output = {}
+
+		if self.payload ~= nil and buffer.len(self.payload) > 0 then
+			output.payload = proto.json.serializeBuffer(self.payload)
+		end
+
+		return output
+	end
+
+	function _AdapterCallResponseImpl.jsonDecode(input: { [string]: any }): AdapterCallResponse
+		local self = _AdapterCallResponseImpl.new()
+
+		if input.payload ~= nil then
+			self.payload = proto.json.deserializeBuffer(input.payload)
+		end
+
+		return self
+	end
+
+	_AdapterCallResponseImpl.descriptor = {
+		name = "AdapterCallResponse",
+		fullName = "rodeo.runtime.AdapterCallResponse",
+	}
+
+	messages.AdapterCallResponse = _AdapterCallResponseImpl :: any -- Luau: Not sure why this intersection fails.
+
+	typeRegistry.default:register(messages.AdapterCallResponse)
 end
 
 do
@@ -9043,6 +9264,12 @@ do
 							type = (v :: any).type,
 							value = messages.RobloxCaptureCollectRequest.new((v :: any).value),
 						} :: any
+				elseif
+					(v :: any).type == "adapterCall"
+					and (v :: any).value ~= nil
+					and getmetatable((v :: any).value) == nil
+				then
+					return { type = (v :: any).type, value = messages.AdapterCallRequest.new((v :: any).value) } :: any
 				end
 				return v :: any
 			end)(),
@@ -9203,6 +9430,10 @@ do
 			elseif self.req.type == "robloxCaptureCollect" then
 				local encoded = self.req.value:encode()
 				output, cursor = proto.writeTag(output, cursor, 59, proto.wireTypes.lengthDelimited)
+				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
+			elseif self.req.type == "adapterCall" then
+				local encoded = self.req.value:encode()
+				output, cursor = proto.writeTag(output, cursor, 70, proto.wireTypes.lengthDelimited)
 				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
 			end
 		end
@@ -9416,6 +9647,11 @@ do
 					value, cursor = proto.readBuffer(input, cursor)
 					self.req = { type = "robloxSceneEncode", value = messages.RobloxSceneEncodeRequest.decode(value) }
 					continue
+				elseif field == 70 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.req = { type = "adapterCall", value = messages.AdapterCallRequest.decode(value) }
+					continue
 				end
 
 				local length
@@ -9522,6 +9758,8 @@ do
 				output.robloxCaptureBegin = self.req.value:jsonEncode()
 			elseif self.req.type == "robloxCaptureCollect" then
 				output.robloxCaptureCollect = self.req.value:jsonEncode()
+			elseif self.req.type == "adapterCall" then
+				output.adapterCall = self.req.value:jsonEncode()
 			end
 		end
 
@@ -9717,6 +9955,10 @@ do
 				type = "robloxCaptureCollect",
 				value = messages.RobloxCaptureCollectRequest.jsonDecode(input.robloxCaptureCollect),
 			}
+		end
+
+		if input.adapterCall ~= nil then
+			self.req = { type = "adapterCall", value = messages.AdapterCallRequest.jsonDecode(input.adapterCall) }
 		end
 
 		return self
@@ -9991,6 +10233,12 @@ do
 						type = (v :: any).type,
 						value = messages.RobloxCaptureCollectResponse.new((v :: any).value),
 					} :: any
+				elseif
+					(v :: any).type == "adapterCall"
+					and (v :: any).value ~= nil
+					and getmetatable((v :: any).value) == nil
+				then
+					return { type = (v :: any).type, value = messages.AdapterCallResponse.new((v :: any).value) } :: any
 				end
 				return v :: any
 			end)(),
@@ -10154,6 +10402,10 @@ do
 			elseif self.res.type == "robloxCaptureCollect" then
 				local encoded = self.res.value:encode()
 				output, cursor = proto.writeTag(output, cursor, 59, proto.wireTypes.lengthDelimited)
+				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
+			elseif self.res.type == "adapterCall" then
+				local encoded = self.res.value:encode()
+				output, cursor = proto.writeTag(output, cursor, 70, proto.wireTypes.lengthDelimited)
 				output, cursor = proto.writeBuffer(output, cursor, encoded, buffer.len(encoded))
 			end
 		end
@@ -10370,6 +10622,11 @@ do
 					value, cursor = proto.readBuffer(input, cursor)
 					self.res = { type = "robloxSceneEncode", value = messages.Ok.decode(value) }
 					continue
+				elseif field == 70 then
+					local value
+					value, cursor = proto.readBuffer(input, cursor)
+					self.res = { type = "adapterCall", value = messages.AdapterCallResponse.decode(value) }
+					continue
 				end
 
 				local length
@@ -10478,6 +10735,8 @@ do
 				output.robloxCaptureBegin = self.res.value:jsonEncode()
 			elseif self.res.type == "robloxCaptureCollect" then
 				output.robloxCaptureCollect = self.res.value:jsonEncode()
+			elseif self.res.type == "adapterCall" then
+				output.adapterCall = self.res.value:jsonEncode()
 			end
 		end
 
@@ -10664,6 +10923,10 @@ do
 			}
 		end
 
+		if input.adapterCall ~= nil then
+			self.res = { type = "adapterCall", value = messages.AdapterCallResponse.jsonDecode(input.adapterCall) }
+		end
+
 		return self
 	end
 
@@ -10725,6 +10988,8 @@ return {
 	ProcessOptions = messages.ProcessOptions,
 	ProcessGetInfoRequest = messages.ProcessGetInfoRequest,
 	ProcessGetInfoResponse = messages.ProcessGetInfoResponse,
+	AdapterCallRequest = messages.AdapterCallRequest,
+	AdapterCallResponse = messages.AdapterCallResponse,
 	ProcessExitRequest = messages.ProcessExitRequest,
 	ProcessRunRequest = messages.ProcessRunRequest,
 	ProcessRunResponse = messages.ProcessRunResponse,

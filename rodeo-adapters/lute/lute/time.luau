@@ -1,6 +1,7 @@
 -- @lute/time shim — pure-Luau Instant/Duration matching lute's: frozen values
 -- with arithmetic, comparison and tostring operators, at nanosecond precision.
--- Instants are monotonic via os.clock().
+-- Instants are monotonic via os.clock(). Durations cross the runtime bridge
+-- as values: Lute's arrive as these, and these reach Lute as its own.
 
 local NANOS_PER_SECOND = 1_000_000_000
 
@@ -201,5 +202,18 @@ time.duration = {
 		return fromSeconds(n * 604800)
 	end,
 }
+
+require("@rodeo-bridge").valueType({
+	name = "Duration",
+	is = function(value)
+		return type(value) == "table" and getmetatable(value) == durationMeta
+	end,
+	fields = function(d)
+		return { d.sec, d.nsec }
+	end,
+	new = function(fields)
+		return Duration(fields[1], fields[2])
+	end,
+})
 
 return time
