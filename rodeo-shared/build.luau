@@ -21,4 +21,23 @@ process.exec("protoc", {
 	"rodeo-proto/proto/runtime.proto",
 }, { stdio = "forward" })
 
+-- protoc-gen-luau's Windows release embeds its runtime modules (proto/*.luau)
+-- with CRLF line endings. Normalize, so a Windows build regenerates the
+-- committed bytes instead of dirtying every runtime module.
+local function normalizeLineEndings(dir: string)
+	for _, name in fs.readDir(dir) do
+		local path = `{dir}/{name}`
+		if fs.isDir(path) then
+			normalizeLineEndings(path)
+		else
+			local source = fs.readFile(path)
+			local normalized = source:gsub("\r\n", "\n")
+			if normalized ~= source then
+				fs.writeFile(path, normalized)
+			end
+		end
+	end
+end
+normalizeLineEndings("rodeo-shared/proto")
+
 print("Luau proto gen complete.")

@@ -1,0 +1,6 @@
+# Check text files out with LF on every platform, as they are committed.
+# Without this, Git for Windows' default core.autocrlf=true checks them out
+# as CRLF, and anything that parses repository files (the build's skill
+# version check, tests comparing fixtures byte for byte, shims baked into the
+# binary) sees bytes no macOS checkout has.
+* text=auto eol=lf
