@@ -24,7 +24,8 @@ describe("place (CLI)", () => {
       "-- @rodeo run --place\nprint('directive place ok')\nreturn nil",
     );
     try {
-      const result = runRodeo(["run", scriptPath]);
+      // A spare port: a serve of another build on the default one refuses the run.
+      const result = runRodeo(["run", scriptPath, "--port", "46006"]);
       expect(result.ok).toBe(true);
       expect(result.stdout + result.stderr).toContain("directive place ok");
     } finally {
