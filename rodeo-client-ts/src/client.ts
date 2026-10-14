@@ -14,17 +14,19 @@ export type { DomRunCodeOpts, LogFilter, RunCodeOpts, RunResult };
 // Shared runCode plumbing (all three tiers: client / studio / dom)
 // ---------------------------------------------------------------------------
 
-/// Process the source, open a stream, and collect the final RunResult. `method`
-/// selects the tier (`client.runCode` / `studio.runCode` / `dom.runCode`);
-/// `target` carries the tier's identifier (`{}` / `{studioHandle}` / `{domId}`).
+/// Open a stream for the run and collect the final RunResult. `method` selects
+/// the tier (`client.runCode` / `studio.runCode` / `dom.runCode`); `target`
+/// carries the tier's identifier (`{}` / `{studioHandle}` / `{domId}`). The
+/// daemon processes the script (bundle + shims + ensure_return).
 async function daemonRunCode(
   daemon: Daemon,
   method: string,
   target: Record<string, unknown>,
   opts: RunCodeOpts,
 ): Promise<RunResult> {
-  // Process source via rodeo __process_source (bundle + shims + ensure_return).
-  const processed = processSource({ source: opts.source, file: opts.file, sourcemap: opts.sourcemap });
+  if (!opts.file && !opts.source) {
+    throw new Error("runCode requires either `source` or `file`");
+  }
 
   // Local tag for the default profile-dir name only — NOT the run id (the
   // master mints that; it comes back on the result as `executionId`).
@@ -79,7 +81,10 @@ async function daemonRunCode(
     await daemon.request<{ streamId: string }>(method, {
       ...target,
       streamId,
-      source: processed.script,
+      // A file wins over inline source.
+      file: opts.file ?? null,
+      source: opts.file ? null : opts.source,
+      sourcemap: opts.file ? (opts.sourcemap ?? null) : null,
       mode: route.mode ?? null,
       domKind: route.domKind ?? null,
       context: opts.context ?? null,
@@ -89,8 +94,6 @@ async function daemonRunCode(
       scriptArgs: opts.scriptArgs ?? [],
       profileDir: profileDir ?? null,
       returnFile: opts.returnFile ?? null,
-      instancePath: processed.instancePath ?? null,
-      scriptPath: processed.scriptPath ?? null,
       logFilter: opts.logFilter ?? null,
     });
   } catch (e) {
@@ -660,30 +663,6 @@ function parseUrl(url: string): { host: string; port: number } {
     throw new Error(`invalid url for RodeoClient: ${url}`);
   }
   return { host, port };
-}
-
-type ProcessedSource = {
-  script: string;
-  scriptPath?: string;
-  instancePath?: string;
-};
-
-function processSource(opts: { source?: string; file?: string; sourcemap?: string }): ProcessedSource {
-  const args = ["__process_source"];
-  if (opts.file) {
-    args.push(opts.file);
-    if (opts.sourcemap) args.push("--sourcemap", opts.sourcemap);
-  } else if (opts.source) {
-    args.push("--source", opts.source);
-  } else {
-    throw new Error("runCode requires either `source` or `file`");
-  }
-  const proc = Bun.spawnSync(["rodeo", ...args]);
-  if (proc.exitCode !== 0) {
-    const stderr = proc.stderr.toString().trim();
-    throw new Error(`source processing failed: ${stderr}`);
-  }
-  return JSON.parse(proc.stdout.toString()) as ProcessedSource;
 }
 
 function sleep(ms: number): Promise<void> {

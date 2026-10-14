@@ -251,20 +251,6 @@ pub enum Commands {
         ppid: Option<u32>,
     },
 
-    /// Internal: process source (bundle + shim + resolve)
-    #[command(name = "__process_source", hide = true)]
-    ProcessSource {
-        /// Script file to process
-        script: Option<String>,
-        /// Inline source to process. Hyphen-leading values are legal (Luau
-        /// hotcomments) — see Run's `source`.
-        #[arg(long, allow_hyphen_values = true)]
-        source: Option<String>,
-        /// Path to rojo sourcemap.json
-        #[arg(long)]
-        sourcemap: Option<String>,
-    },
-
     /// Internal: canonical JSON-RPC 2.0 client over NDJSON on stdin/stdout.
     /// Spawned by language wrappers (rodeo-client-ts, rodeo-client-luau).
     #[command(name = "__spawn_canonical_client", hide = true)]

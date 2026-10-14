@@ -18,7 +18,8 @@ pub struct ProcessedSource {
     pub instance_path: Option<String>,
 }
 
-/// Process source directly (no subprocess). Used by `run.rs`.
+/// Process source in-process. Used by `rodeo run` and by the client daemon
+/// (`__spawn_canonical_client`) for the TypeScript and Luau clients' runs.
 ///
 /// Runs on a thread with a large stack: both darklua's bundler and full_moon's
 /// parser recurse with the require-graph / AST depth, which overflows Windows'
@@ -115,16 +116,4 @@ fn process_impl(
     } else {
         bail!("either a script file or --source must be provided");
     }
-}
-
-/// Entry point for __process_source subcommand (outputs JSON to stdout).
-pub fn main(
-    script: Option<String>,
-    source_arg: Option<String>,
-    sourcemap: Option<String>,
-) -> Result<()> {
-    let result = process(script, source_arg, sourcemap)?;
-    let json = serde_json::to_string(&result)?;
-    println!("{json}");
-    Ok(())
 }

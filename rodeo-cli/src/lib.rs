@@ -360,10 +360,6 @@ pub async fn run() {
             if let Some(ppid) = ppid { parent_exit::on_parent_exit(ppid); }
             commands::serve::run_studio_backend(port, &master_host, master_port).await
         }
-        Commands::ProcessSource { script, source, sourcemap } => {
-            commands::process_source::main(script, source, sourcemap)
-                .map_err(|e| { eprintln!("{e}"); e })
-        }
         Commands::SpawnCanonicalClient { host, port } => {
             commands::spawn_canonical_client::main(host, port.unwrap_or(config::SERVE_PORT)).await
         }

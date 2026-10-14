@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use crate::cli::{FflagArgs, PlaceArgs, ServerArgs};
 use crate::cli_run::{self, RunRequest};
 use rodeo_client::RodeoClient;
-use crate::commands::process_source::{self, ProcessedSource};
+use crate::commands::process_source;
 use rodeo_proto as proto;
 
 /// All run command arguments
@@ -181,37 +181,8 @@ async fn persistent_mode(args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-/// Resolve script source: read from file/stdin/--source, process, parse directives.
-/// Call `rodeo __process_source` subprocess to bundle + shim + resolve the script.
-fn call_process_source(
-    script_path: Option<&str>,
-    source: Option<&str>,
-    sourcemap: Option<&str>,
-) -> Result<ProcessedSource> {
-    let exe = std::env::current_exe().context("cannot find own binary")?;
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("__process_source");
-
-    if let Some(file) = script_path {
-        cmd.arg(file);
-    }
-    if let Some(src) = source {
-        cmd.args(["--source", src]);
-    }
-    if let Some(sm) = sourcemap {
-        cmd.args(["--sourcemap", sm]);
-    }
-
-    let output = cmd.output().context("failed to run __process_source")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("source processing failed: {}", stderr.trim());
-    }
-
-    serde_json::from_slice(&output.stdout)
-        .context("failed to parse __process_source output")
-}
-
+/// Resolve script source from a file, stdin (`-`) or `--source`, and process
+/// it (bundle + shims + ensure_return).
 fn resolve_script(args: &mut RunArgs) -> Result<ResolvedScript> {
     let script_path = match &args.script {
         Some(s) if s == "-" => {
@@ -231,11 +202,8 @@ fn resolve_script(args: &mut RunArgs) -> Result<ResolvedScript> {
         bail!("no script source provided. Use a file path, '-' for stdin, or --source for inline execution");
     }
 
-    let processed = call_process_source(
-        script_path.as_deref(),
-        args.source.as_deref(),
-        args.sourcemap.as_deref(),
-    )?;
+    let processed = process_source::process(script_path, args.source.clone(), args.sourcemap.clone())
+        .context("source processing failed")?;
 
     // Directive merging is done in the parent at main.rs entry before clap
     // even hands us the final RunArgs — by the time we get here, directive

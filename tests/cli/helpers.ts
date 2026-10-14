@@ -19,6 +19,11 @@ import type { RunCodeOpts, RunResult } from "../../rodeo-client-ts/src/run.js";
 // wall-clock the test would have failed at anyway.
 const SUBPROCESS_TIMEOUT_MS = 60_000;
 
+// A script longer than this goes to `rodeo run` through stdin (`-`), the way
+// it must from a shell: a command line can't hold it (Windows caps a whole
+// command line at 32,767 characters, Linux one argument at 128 KiB).
+const MAX_SOURCE_ARG = 8 * 1024;
+
 export type ProcResult = {
   ok: boolean;
   stdout: string;
@@ -345,7 +350,11 @@ export function makeCliRunFn(
     const args: string[] = ["run", "--port", String(port)];
     if (pinned) args.push("--studio-id", pinned);
 
-    if (opts.source !== undefined) args.push("--source", opts.source);
+    let stdin: Uint8Array | undefined;
+    if (opts.source !== undefined) {
+      if (opts.source.length > MAX_SOURCE_ARG) stdin = new TextEncoder().encode(opts.source);
+      else args.push("--source", opts.source);
+    }
     if (opts.sourcemap !== undefined) args.push("--sourcemap", opts.sourcemap);
     if (opts.showReturn) args.push("--show-return");
     if (opts.reloadRequires) args.push("--reload-requires");
@@ -397,6 +406,7 @@ export function makeCliRunFn(
 
     // File script goes positionally (matches `rodeo run script.luau`).
     if (opts.file !== undefined) args.push(opts.file);
+    else if (stdin) args.push("-");
 
     // scriptArgs is `last = true` in clap — passed after `--`.
     if (opts.scriptArgs && opts.scriptArgs.length > 0) {
@@ -406,7 +416,7 @@ export function makeCliRunFn(
     const globalArgs: string[] = [];
     if (opts.verbose) globalArgs.push("--verbose");
 
-    const proc = Bun.spawnSync(["rodeo", ...globalArgs, ...args], { timeout: SUBPROCESS_TIMEOUT_MS });
+    const proc = Bun.spawnSync(["rodeo", ...globalArgs, ...args], { timeout: SUBPROCESS_TIMEOUT_MS, stdin });
     const stdout = proc.stdout.toString();
     let stderr = proc.stderr.toString();
     if (proc.signalCode) {

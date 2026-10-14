@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use rodeo_client::{
     MultiplayerTest, RodeoClient, RunCodeOpts,
     Studio, StudioBackend, Dom,
@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+use crate::commands::process_source;
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -452,7 +454,20 @@ async fn mp_close(state: Arc<State>, params: Value) -> Result<Value> {
 /// Read a RunCodeOpts from JSON-RPC params, including the routing fields
 /// (mode/dom_kind/context). The DOM tier omits the routing fields at
 /// the type level, so they arrive absent → None.
-fn read_run_opts(params: &Value) -> RunCodeOpts {
+///
+/// The script arrives as the caller has it — a `file`, or inline `source` —
+/// with an optional rojo `sourcemap`, and is processed here the way `rodeo
+/// run` processes it (bundle + shims + ensure_return).
+async fn read_run_opts(params: &Value) -> Result<RunCodeOpts> {
+    let str_opt = |k: &str| params.get(k).and_then(|v| v.as_str()).map(String::from);
+    let (file, source, sourcemap) = (str_opt("file"), str_opt("source"), str_opt("sourcemap"));
+    if file.is_none() && source.is_none() {
+        return Err(anyhow!("runCode requires either `source` or `file`"));
+    }
+    let processed = tokio::task::spawn_blocking(move || process_source::process(file, source, sourcemap))
+        .await?
+        .context("source processing failed")?;
+
     // Parse logFilter from params — missing fields default to "enabled" to
     // match the old TS client's behavior (all message types captured unless
     // explicitly disabled). Passing an unset field on the wire causes the
@@ -474,10 +489,9 @@ fn read_run_opts(params: &Value) -> RunCodeOpts {
     // Accept directory paths from the JSON-RPC caller (same-machine) and hand
     // them to rodeo-client, which writes profile/log files directly to disk.
     let profile_dir = params.get("profileDir").and_then(|v| v.as_str()).map(std::path::PathBuf::from);
-    let str_opt = |k: &str| params.get(k).and_then(|v| v.as_str()).map(String::from);
 
-    RunCodeOpts {
-        source: params.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    Ok(RunCodeOpts {
+        source: processed.script,
         mode: str_opt("mode"),
         dom_kind: str_opt("domKind"),
         context: str_opt("context"),
@@ -489,13 +503,13 @@ fn read_run_opts(params: &Value) -> RunCodeOpts {
             .unwrap_or_default(),
         profile: profile_dir.is_some(),
         log_filter: Some(log_filter),
-        instance_path: str_opt("instancePath"),
-        script_path: str_opt("scriptPath"),
+        instance_path: processed.instance_path,
+        script_path: processed.script_path,
         return_file: str_opt("returnFile"),
         output_file: str_opt("outputFile"),
         profile_dir,
         session: None,
-    }
+    })
 }
 
 async fn dom_run_code(state: Arc<State>, params: Value) -> Result<Value> {
@@ -503,7 +517,7 @@ async fn dom_run_code(state: Arc<State>, params: Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("domId required"))?
         .to_string();
     let stream_id = require_stream_id(&params)?;
-    let opts = read_run_opts(&params);
+    let opts = read_run_opts(&params).await?;
     let dom = state.client.get_dom(&dom_id).await?;
     let stream = dom.run_code_stream(opts).await?;
     pump_stream(state, stream_id, stream).await
@@ -512,7 +526,7 @@ async fn dom_run_code(state: Arc<State>, params: Value) -> Result<Value> {
 async fn studio_run_code(state: Arc<State>, params: Value) -> Result<Value> {
     let studio = lookup_studio(&state, &params).await?;
     let stream_id = require_stream_id(&params)?;
-    let opts = read_run_opts(&params);
+    let opts = read_run_opts(&params).await?;
     let stream = {
         let guard = studio.lock().await;
         guard.run_code_stream(opts).await?
@@ -522,7 +536,7 @@ async fn studio_run_code(state: Arc<State>, params: Value) -> Result<Value> {
 
 async fn client_run_code(state: Arc<State>, params: Value) -> Result<Value> {
     let stream_id = require_stream_id(&params)?;
-    let opts = read_run_opts(&params);
+    let opts = read_run_opts(&params).await?;
     let stream = state.client.submit_run_stream(opts).await?;
     pump_stream(state, stream_id, stream).await
 }

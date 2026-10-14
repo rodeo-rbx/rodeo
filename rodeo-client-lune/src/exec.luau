@@ -1,7 +1,6 @@
 -- Shared runCode plumbing for all three tiers (client / studio / dom).
 -- Mirrors rodeo-client-ts/src/client.ts `daemonRunCode`.
 
-local process = require("@lune/process")
 local serde = require("@lune/serde")
 local task = require("@lune/task")
 
@@ -15,33 +14,6 @@ type Daemon = {
 	shutdown: () -> (),
 }
 
-type ProcessedSource = {
-	script: string,
-	scriptPath: string?,
-	instancePath: string?,
-}
-
-local function processSource(opts: run.RunCodeOpts): ProcessedSource
-	local args = { "__process_source" }
-	if opts.file then
-		table.insert(args, opts.file)
-		if opts.sourcemap then
-			table.insert(args, "--sourcemap")
-			table.insert(args, opts.sourcemap)
-		end
-	elseif opts.source then
-		table.insert(args, "--source")
-		table.insert(args, opts.source)
-	else
-		error("runCode requires either `source` or `file`")
-	end
-	local result = process.exec("rodeo", args)
-	if not result.ok then
-		error(`source processing failed: {result.stderr}`)
-	end
-	return serde.decode("json", result.stdout) :: ProcessedSource
-end
-
 -- `method` selects the tier (client./studio./dom.runCode); `target` carries
 -- the tier's identifier ({}, { studioHandle = h }, or { domId = id }).
 local function runViaDaemon(
@@ -50,7 +22,10 @@ local function runViaDaemon(
 	target: { [string]: any },
 	opts: run.RunCodeOpts
 ): run.RunResult
-	local processed = processSource(opts)
+	-- The daemon processes the script (bundle + shims + ensure_return).
+	if not opts.file and not opts.source then
+		error("runCode requires either `source` or `file`")
+	end
 
 	-- Local tag for the default profile-dir name only — NOT the run id.
 	local profileTag = uuid.v4()
@@ -109,7 +84,10 @@ local function runViaDaemon(
 
 	local params: { [string]: any } = {
 		streamId = streamId,
-		source = processed.script,
+		-- A file wins over inline source.
+		file = opts.file,
+		source = if opts.file then nil else opts.source,
+		sourcemap = if opts.file then opts.sourcemap else nil,
 		mode = opts.mode,
 		domKind = opts.domKind,
 		context = opts.context,
@@ -119,8 +97,6 @@ local function runViaDaemon(
 		scriptArgs = opts.scriptArgs or {},
 		profileDir = profileDir,
 		returnFile = opts.returnFile,
-		instancePath = processed.instancePath,
-		scriptPath = processed.scriptPath,
 		logFilter = opts.logFilter,
 	}
 	for k, v in target do
