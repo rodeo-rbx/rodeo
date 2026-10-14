@@ -52,9 +52,15 @@ pub fn diff_state(new: &StudioStateMsg, old: &StudioStateMsg) -> Option<String> 
     if new.dom_kind != old.dom_kind {
         changes.push(format!("domKind: {} → {}", opt(&old.dom_kind), opt(&new.dom_kind)));
     }
+    let short = |s: Option<&str>| s.filter(|v| !v.is_empty()).map(|v| &v[..8.min(v.len())]).unwrap_or("none").to_string();
     if new.mcp_studio_id != old.mcp_studio_id {
-        let short = |s: &Option<String>| s.as_deref().map(|v| &v[..8.min(v.len())]).unwrap_or("none").to_string();
-        changes.push(format!("mcp_studio_id: {} → {}", short(&old.mcp_studio_id), short(&new.mcp_studio_id)));
+        changes.push(format!("mcp_studio_id: {} → {}", short(old.mcp_studio_id.as_deref()), short(new.mcp_studio_id.as_deref())));
+    }
+    if new.studio_id != old.studio_id {
+        changes.push(format!("studio_id: {} → {}", short(Some(&old.studio_id)), short(Some(&new.studio_id))));
+    }
+    if new.session_guid != old.session_guid {
+        changes.push(format!("session: {} → {}", short(old.session_guid.as_deref()), short(new.session_guid.as_deref())));
     }
     if new.is_server != old.is_server {
         changes.push(format!("is_server: {} → {}", old.is_server, new.is_server));

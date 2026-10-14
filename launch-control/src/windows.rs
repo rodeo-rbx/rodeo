@@ -35,18 +35,19 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, DispatchMessageW, EnumWindows, GetAncestor, GetForegroundWindow, GetWindow,
-    GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    MsgWaitForMultipleObjects, PeekMessageW, SetForegroundWindow, SetWindowPos, ShowWindow,
-    CHILDID_SELF, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER,
-    HWND_BOTTOM, MSG, OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    BringWindowToTop, DispatchMessageW, EnumWindows, GetAncestor, GetClassNameW,
+    GetForegroundWindow, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, MsgWaitForMultipleObjects, PeekMessageW,
+    SetForegroundWindow, SetWindowPos, ShowWindow, CHILDID_SELF, EVENT_OBJECT_SHOW,
+    EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, GW_OWNER, HWND_BOTTOM, MSG, OBJID_WINDOW,
+    PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE,
+    SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, keybd_event, KEYEVENTF_KEYUP,
+    GetAsyncKeyState, IsWindowEnabled, keybd_event, KEYEVENTF_KEYUP,
 };
 use keyboard_types::{Code, Modifiers};
 
@@ -178,6 +179,19 @@ impl WindowsHandle {
                 "send_keystroke: target pid {} not foreground (was {front_pid})",
                 self.pid
             )));
+        }
+        // The chord goes to whichever of the app's windows is foreground: a
+        // dialog the app put in front of the target swallows it.
+        let fg = unsafe { GetForegroundWindow() };
+        if fg == hwnd {
+            tracing::debug!(pid = self.pid, target = %describe_window(hwnd), "send_keystroke: target is foreground");
+        } else {
+            tracing::info!(
+                pid = self.pid,
+                target = %describe_window(hwnd),
+                foreground = %describe_window(fg),
+                "send_keystroke: another of the app's windows is foreground",
+            );
         }
         // Let the just-foregrounded window become input-ready before typing.
         std::thread::sleep(Duration::from_millis(120));
@@ -1116,6 +1130,24 @@ fn find_main_window_by_pid(target_pid: u32) -> Option<HWND> {
     }
 
     data.found_hwnd
+}
+
+/// `hwnd`'s title, class and state, for logs.
+fn describe_window(hwnd: HWND) -> String {
+    let mut title = [0u16; 128];
+    let mut class = [0u16; 64];
+    unsafe {
+        let title_len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
+        let class_len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+        format!(
+            "{hwnd:?} {:?} [{}] enabled={} iconic={} owner={:?}",
+            String::from_utf16_lossy(&title[..title_len]),
+            String::from_utf16_lossy(&class[..class_len]),
+            IsWindowEnabled(hwnd) != 0,
+            IsIconic(hwnd) != 0,
+            GetWindow(hwnd, GW_OWNER),
+        )
+    }
 }
 
 /// Best-effort bring `hwnd` to the foreground and return the pid that owns the
