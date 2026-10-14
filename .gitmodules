@@ -4,6 +4,3 @@
 [submodule "submodules/lune"]
 	path = submodules/lune
 	url = https://github.com/lune-org/lune.git
-[submodule "submodules/robloxstudio-mcp"]
-	path = submodules/robloxstudio-mcp
-	url = git@github.com:Chrrxs/robloxstudio-mcp.git
