@@ -21,9 +21,12 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    AttachThreadInput, CreateProcessW, GetCurrentThreadId, GetExitCodeProcess, OpenProcess,
-    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_INFORMATION,
-    PROCESS_NAME_WIN32, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
+    AttachThreadInput, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentThreadId,
+    GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcess,
+    QueryFullProcessImageNameW, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, QueryInformationJobObject,
@@ -390,6 +393,18 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
 
     let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
 
+    // The child inherits the pipe write ends and nothing else (see
+    // `InheritList`). If the list can't be built, it inherits every
+    // inheritable handle, as before.
+    let mut inherit = if write_ends.is_empty() { None } else { InheritList::new(write_ends.clone()) };
+    let mut six = STARTUPINFOEXW { StartupInfo: si, lpAttributeList: ptr::null_mut() };
+    let mut extended = 0;
+    if let Some(list) = &mut inherit {
+        six.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
+        six.lpAttributeList = list.as_ptr();
+        extended = EXTENDED_STARTUPINFO_PRESENT;
+    }
+
     // `Command::detached(true)` → DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP
     // + CREATE_BREAKAWAY_FROM_JOB.
     // DETACHED_PROCESS: child doesn't inherit the parent's console, so console
@@ -427,13 +442,13 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<crate::Child> {
                 wide_cmd.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
-                // bInheritHandles: TRUE when capturing so the child inherits
-                // the pipe write ends (only those are marked inheritable).
-                if want_capture { 1 } else { 0 },
-                flags,
+                // bInheritHandles: TRUE when capturing so the child gets the
+                // pipe write ends.
+                if write_ends.is_empty() { 0 } else { 1 },
+                flags | extended,
                 ptr::null(),
                 ptr::null(),
-                &si,
+                &six.StartupInfo,
                 &mut pi,
             )
         };
@@ -624,6 +639,60 @@ fn open_tracked_handle(pid: u32) -> Option<HANDLE> {
         None
     } else {
         Some(h)
+    }
+}
+
+/// A process attribute list naming the only handles a new process inherits
+/// (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). `bInheritHandles` alone hands the
+/// child every inheritable handle in this process, and those include the
+/// standard handles this process itself inherited: an app that outlives us
+/// (a detached Studio) would hold our parent's stdout and stderr open, and
+/// whoever reads `rodeo run --detach`'s output would wait for EOF until the
+/// app exits.
+struct InheritList {
+    /// Storage for the opaque list (usize-aligned).
+    buf: Vec<usize>,
+    /// The handle array the list points at: must outlive the list.
+    _handles: Vec<HANDLE>,
+}
+
+impl InheritList {
+    fn new(handles: Vec<HANDLE>) -> Option<Self> {
+        unsafe {
+            let mut size = 0usize;
+            InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size);
+            let mut buf = vec![0usize; size.div_ceil(mem::size_of::<usize>())];
+            let list = buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+            if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
+                tracing::warn!(error = ?io::Error::last_os_error(), "InitializeProcThreadAttributeList failed");
+                return None;
+            }
+            let updated = UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                handles.as_ptr() as *const _,
+                handles.len() * mem::size_of::<HANDLE>(),
+                ptr::null_mut(),
+                ptr::null(),
+            );
+            if updated == 0 {
+                tracing::warn!(error = ?io::Error::last_os_error(), "UpdateProcThreadAttribute failed");
+                DeleteProcThreadAttributeList(list);
+                return None;
+            }
+            Some(Self { buf, _handles: handles })
+        }
+    }
+
+    fn as_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+        self.buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST
+    }
+}
+
+impl Drop for InheritList {
+    fn drop(&mut self) {
+        unsafe { DeleteProcThreadAttributeList(self.as_ptr()) };
     }
 }
 
