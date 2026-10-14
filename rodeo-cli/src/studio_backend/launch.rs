@@ -7,7 +7,6 @@
 //! No place-file mutation: the original file opens unchanged.
 
 use anyhow::{bail, Context, Result};
-use rbx_dom_weak::{InstanceBuilder, WeakDom};
 use std::path::{Path, PathBuf};
 
 use crate::studio_backend::plugin_embed;
@@ -16,6 +15,8 @@ use crate::studio_backend::plugin_embed;
 // (via `pub use launch::*;` in mod.rs) keep working unchanged.
 pub use rbx_control::fflags::FflagConfig;
 pub use rbx_control::studio::launch::{PlaceTarget, SaveMode};
+// The empty place every empty-place launch opens (gives RunScript a file).
+use rbx_control::studio::launch::create_minimal_place;
 
 /// Parse a rodeo CLI `--save` argument into a `SaveMode`.
 /// - `None` → `NoSave`
@@ -768,13 +769,6 @@ mod prepare_place_tests {
             .expect_err("directory must fail");
         assert!(err.to_string().contains("is a directory"), "{err}");
     }
-}
-
-/// Create a minimal DataModel with an empty Workspace, for empty-place launches
-/// (gives RunScript a file to open).
-fn create_minimal_place() -> WeakDom {
-    let workspace = InstanceBuilder::new("Workspace");
-    WeakDom::new(InstanceBuilder::new("DataModel").with_child(workspace))
 }
 
 /// Cheap, read-only sanity check that a path looks like a Roblox place file —

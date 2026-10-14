@@ -788,14 +788,26 @@ impl Drop for Studio {
 // Place helpers
 // ---------------------------------------------------------------------------
 
-/// Create a minimal empty place DOM (DataModel + Workspace).
+/// Create a minimal empty place DOM (DataModel + Workspace + Lighting).
+///
+/// The Lighting is there for its Technology. Studio loads a place with no
+/// Lighting as `Technology = Compatibility`, which is deprecated, and then
+/// sometimes opens a modal "Lighting Technology Migration" dialog over the
+/// editor, which swallows a save's keystroke. Voxel is what a new Lighting
+/// defaults to.
 pub fn create_minimal_place() -> WeakDom {
     let mut dom = WeakDom::new(InstanceBuilder::new("DataModel"));
     let root = dom.root_ref();
     let workspace = InstanceBuilder::new("Workspace");
     dom.insert(root, workspace);
+    let lighting = InstanceBuilder::new("Lighting")
+        .with_property("Technology", rbx_dom_weak::types::Enum::from_u32(TECHNOLOGY_VOXEL));
+    dom.insert(root, lighting);
     dom
 }
+
+/// `Enum.Technology.Voxel`.
+const TECHNOLOGY_VOXEL: u32 = 1;
 
 /// Serialize a `WeakDom` to `.rbxl` binary format.
 pub fn serialize_place(dom: &WeakDom) -> Result<Vec<u8>> {
