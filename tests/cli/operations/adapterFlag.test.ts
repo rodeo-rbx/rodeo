@@ -38,12 +38,14 @@ describe("--adapter (CLI)", () => {
           "-- @rodeo run --adapter lute",
           'local path = require("@std/path")',
           'local json = require("@std/json")',
-          'return json.serialize({ joined = path.format(path.join("a", "b")) })',
+          "-- Lute's path joins with the host's separator.",
+          'local joined = path.format(path.join("a", "b"))',
+          'return json.serialize({ joined = joined == "a/b" or joined == "a\\\\b" })',
         ].join("\n"),
       ),
     ]);
     expect(r.ok, r.out).toBe(true);
-    expect(r.out).toContain('a/b');
+    expect(r.out).toContain('joined\\":true');
   });
 
   it("CLI adapters add to the directive's", () => {
