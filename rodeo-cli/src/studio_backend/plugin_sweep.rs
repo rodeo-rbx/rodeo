@@ -208,13 +208,15 @@ pub async fn sweep() {
         return;
     }
 
-    let mut probes = HashMap::new();
-    for entry in entries.iter().filter(|e| e.age >= MIN_AGE) {
-        let mp = master_port(entry.port);
-        if !probes.contains_key(&mp) {
-            probes.insert(mp, probe(mp).await);
-        }
-    }
+    // Probe the masters concurrently: on Windows a port nothing listens on
+    // takes about 2s to refuse a connection, so probing them in turn would
+    // cost that per stale file.
+    let ports: HashSet<u16> = entries.iter().filter(|e| e.age >= MIN_AGE).map(|e| master_port(e.port)).collect();
+    let probes: HashMap<u16, Probe> =
+        futures_util::future::join_all(ports.into_iter().map(|mp| async move { (mp, probe(mp).await) }))
+            .await
+            .into_iter()
+            .collect();
     let live = tokio::task::spawn_blocking(live_ports).await.unwrap_or_default();
 
     for path in sweep_decisions(&entries, &probes, &live) {

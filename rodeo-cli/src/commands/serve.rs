@@ -147,13 +147,18 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
         .context(format!("failed to bind to {addr}"))?;
 
     // Bound: this port is ours. Sweep plugin files left behind by dead
-    // backends, then install this backend's own — one file per running
+    // backends, and install this backend's own — one file per running
     // backend, named by build and port, so serves of different builds or
     // ports never overwrite each other's plugin (issue #12). Installing only
     // after the bind means the file never describes a backend that failed to
     // start. The write is byte-idempotent, so a same-build serve returning to
     // this port leaves Studios that still hold the plugin untouched.
-    crate::studio_backend::plugin_sweep::sweep().await;
+    //
+    // The sweep runs alongside startup rather than before it: it probes the
+    // masters of other serves' files, which can take seconds (a dead port is
+    // slow to refuse on Windows), and nothing here waits on it — it never
+    // touches this backend's file (too new, and its master answers).
+    tokio::spawn(crate::studio_backend::plugin_sweep::sweep());
     match crate::studio_backend::launch::install_plugin(port) {
         Ok(path) => {
             // A file an earlier backend left on exit is this backend's now.
