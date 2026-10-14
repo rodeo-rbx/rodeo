@@ -357,7 +357,7 @@ pub async fn run() {
             commands::serve::run_master(port, master_id).await
         }
         Commands::InternalStudioBackend { port, master_host, master_port, ppid } => {
-            if let Some(ppid) = ppid { parent_exit::on_parent_exit(ppid); }
+            if let Some(ppid) = ppid { commands::serve::exit_backend_with_parent(ppid); }
             commands::serve::run_studio_backend(port, &master_host, master_port).await
         }
         Commands::SpawnCanonicalClient { host, port } => {

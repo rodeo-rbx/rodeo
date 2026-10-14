@@ -509,6 +509,11 @@ export function cliStudioHandle(port: number, opts: CliStudioOpts = {}): CliStud
       if (!bg) return;
       bg.kill();
       await bg.exited;
+      // On Unix the run client is asked to stop (SIGTERM) and waits for its
+      // serve to shut down. Windows can only kill it outright; its serve's
+      // studio backend then finishes shutting down on its own. Wait for that
+      // too, so the serve is gone when close() resolves on every platform.
+      await waitUntil(() => !processMatches(`__studio-backend --port ${port + 1}`), 15_000, "the serve's studio backend to exit");
       if (!opts.keepPluginFile) removeKeptPluginFile(port);
     },
     studio: () => {

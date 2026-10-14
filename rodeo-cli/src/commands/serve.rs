@@ -256,6 +256,7 @@ pub async fn run_studio_backend(port: u16, master_host: &str, master_port: u16) 
 /// Handle returned by `start_full_serve` for lifecycle management.
 pub struct ServeHandle {
     pub shutdown_rx: tokio::sync::mpsc::Receiver<()>,
+    /// The master, then the studio backend.
     children: Vec<Box<dyn ChildWrapper>>,
     /// Windows: one kill-on-close job per child. Held (not read) so the job
     /// handles live exactly as long as this handle — dropping them, or this
@@ -305,14 +306,66 @@ impl ServeHandle {
         for child in &self.children {
             let _ = child.signal(libc::SIGTERM);
         }
-        #[cfg(not(unix))]
-        for child in &mut self.children {
-            let _ = child.start_kill();
+        // Windows has no SIGTERM to ask with. A studio backend runs the same
+        // cleanup when its master connection closes, so stop the master and
+        // let the backend finish before forcing whatever is left.
+        #[cfg(windows)]
+        {
+            self.stop_master();
+            let deadline = tokio::time::Instant::now() + BACKEND_WIND_DOWN;
+            for child in &mut self.children {
+                if tokio::time::timeout_at(deadline, child.wait()).await.is_err() {
+                    let _ = child.start_kill();
+                }
+            }
         }
         for child in &mut self.children {
             let _ = child.wait().await;
         }
     }
+
+    /// Kill the master, which `start_full_serve` spawns first.
+    #[cfg(windows)]
+    fn stop_master(&mut self) {
+        if let Some(master) = self.children.first_mut() {
+            let _ = master.start_kill();
+        }
+    }
+
+    /// Let the studio backend hold its own job open. If this process dies
+    /// without stopping it (a hard kill), the master dies at once with its
+    /// job, which closes the backend's master connection and runs its
+    /// shutdown; the backend's job kills what is left only once the backend
+    /// has exited, instead of killing it mid-shutdown.
+    #[cfg(windows)]
+    fn share_backend_job(&self) -> Result<()> {
+        let (Some(backend), Some(job)) = (self.children.get(1), self.jobs.get(1)) else {
+            return Ok(());
+        };
+        let pid = backend.id().context("studio backend has no pid")?;
+        job.share_with(pid).context("failed to share the studio backend's job with it")
+    }
+}
+
+/// How long a studio backend gets, once its master is gone, to finish its own
+/// shutdown (close the Studios it launched, record its plugin file) before it
+/// is killed.
+#[cfg(windows)]
+const BACKEND_WIND_DOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Exit the studio backend when `ppid`, the serve that spawned it, exits. On
+/// Unix the parent-exit watch SIGTERMs this process, which runs the backend's
+/// shutdown. Windows has no signal to send; there the serve's death takes the
+/// master with it, and the closed master connection runs the same shutdown —
+/// so only exit if that hasn't finished within the wind-down window.
+pub fn exit_backend_with_parent(ppid: u32) {
+    #[cfg(not(windows))]
+    parent_exit::on_parent_exit(ppid);
+    #[cfg(windows)]
+    parent_exit::on_pid_exit(ppid, || {
+        std::thread::sleep(BACKEND_WIND_DOWN);
+        std::process::exit(0);
+    });
 }
 
 impl Drop for ServeHandle {
@@ -321,9 +374,18 @@ impl Drop for ServeHandle {
         for child in &self.children {
             let _ = child.signal(libc::SIGTERM);
         }
-        #[cfg(not(unix))]
-        for child in &mut self.children {
-            let _ = child.start_kill();
+        // As in `kill_children`, but waiting here: the jobs, dropped right
+        // after, would kill the backend mid-cleanup.
+        #[cfg(windows)]
+        {
+            self.stop_master();
+            let deadline = std::time::Instant::now() + BACKEND_WIND_DOWN;
+            for child in &mut self.children {
+                while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                let _ = child.start_kill();
+            }
         }
     }
 }
@@ -338,6 +400,15 @@ fn spawn_in_group(exe: &std::path::Path, args: &[&str]) -> Result<SpawnedChild> 
         cmd.args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::inherit());
+        // A console Ctrl+C reaches every process attached to the console
+        // unless it is in another process group, so give each child its own,
+        // as on Unix: only this process sees it and stops the children in
+        // order (`kill_children`), instead of each dying mid-whatever.
+        #[cfg(windows)]
+        {
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
     });
     // Put each child in its own kill group so termination cascades to
     // grandchildren (e.g. Studio): a Unix process group, or a Windows job
@@ -390,6 +461,10 @@ pub async fn start_full_serve(port: u16) -> Result<ServeHandle> {
     let studio_port_str = studio_port.to_string();
     let port_str = port.to_string();
     handle.spawn(&exe, &["__studio-backend", "--port", &studio_port_str, "--master-host", "localhost", "--master-port", &port_str, "--ppid", &ppid])?;
+    #[cfg(windows)]
+    if let Err(e) = handle.share_backend_job() {
+        tracing::warn!("{e:#}; if this process is killed, the studio backend dies without its shutdown");
+    }
     loop {
         let backends = rc.list_backends(None).await.unwrap_or_default();
         if backends.iter().any(|b| b.kind == "studio") { break; }

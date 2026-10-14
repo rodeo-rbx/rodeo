@@ -19,14 +19,14 @@
 
 #![cfg(windows)]
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
 };
 
 /// Owns one job handle. Dropping it (or the owning process exiting, however
@@ -78,6 +78,36 @@ impl KillOnCloseJob {
             let ok = AssignProcessToJobObject(self.handle, proc);
             let err = std::io::Error::last_os_error();
             CloseHandle(proc);
+            if ok == 0 {
+                return Err(err);
+            }
+            Ok(())
+        }
+    }
+
+    /// Give process `pid` a handle to this job of its own. The job closes —
+    /// killing what is left in it — only once every handle is gone, so it then
+    /// outlives this process until `pid` exits too: a member that has cleanup
+    /// to do after this process dies gets to finish it first. The handle is in
+    /// `pid`'s table, closed by the OS when `pid` exits; `pid` never uses it.
+    pub fn share_with(&self, pid: u32) -> std::io::Result<()> {
+        unsafe {
+            let target = OpenProcess(PROCESS_DUP_HANDLE, 0, pid);
+            if target.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut shared: HANDLE = std::ptr::null_mut();
+            let ok = DuplicateHandle(
+                GetCurrentProcess(),
+                self.handle,
+                target,
+                &mut shared,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            );
+            let err = std::io::Error::last_os_error();
+            CloseHandle(target);
             if ok == 0 {
                 return Err(err);
             }
