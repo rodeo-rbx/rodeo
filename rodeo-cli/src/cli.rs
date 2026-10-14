@@ -98,8 +98,8 @@ pub enum Commands {
         sourcemap: Option<String>,
 
         /// Run code written for another Luau runtime: its standard library
-        /// requires (lune: @lune/*; lute: @lute/*, @std/*, @batteries/*)
-        /// resolve to rodeo's implementations. Repeatable.
+        /// requires (lune: @lune/*; lute: @lute/*, @std/*, @batteries/*) reach
+        /// that runtime, which rodeo runs alongside the script. Repeatable.
         #[arg(long = "adapter", value_name = "ADAPTER", value_parser = adapter_parser())]
         adapters: Vec<String>,
 
