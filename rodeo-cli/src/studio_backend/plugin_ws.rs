@@ -148,7 +148,7 @@ fn no_studio_mcp_message(dom_state: Option<&proto::StudioStateMsg>) -> String {
     format!(
         "{studio} has no StudioMCP connection (waited 10 s), and --context mcp runs \
          through StudioMCP. Open the AI Assistant panel in that Studio with MCP Server \
-         enabled in its settings, or use --context cmdbar (edit DOM of a Studio rodeo launched)."
+         enabled in its settings, or use --context cmd (edit DOM of a Studio rodeo launched)."
     )
 }
 

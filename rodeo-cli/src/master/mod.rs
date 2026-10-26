@@ -1622,7 +1622,7 @@ mod tests {
     #[test]
     fn pinned_run_at_a_context_the_dom_cannot_host_is_rejected() {
         use crate::shared::target::RunContext as C;
-        for (dom, kind, context) in [("play-dom", "client", C::Server), ("play-dom", "server", C::Client), ("edit-dom", "edit", C::Client), ("play-dom", "client", C::Cmdbar)] {
+        for (dom, kind, context) in [("play-dom", "client", C::Server), ("play-dom", "server", C::Client), ("edit-dom", "edit", C::Client), ("play-dom", "client", C::Cmd)] {
             let (mut state, mut backend_rx) = state_with_edit_dom("edit-dom", Some("sess-A"));
             state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| s.doms.push(play_dom("play-dom", Some("client"))));
             state.backends.get("backend-1").unwrap().state_tx.send_modify(|s| {

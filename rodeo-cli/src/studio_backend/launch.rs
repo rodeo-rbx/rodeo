@@ -463,7 +463,7 @@ fn expand_show_widgets(spec: &str, port: u16) -> String {
 /// launch (command-bar identity), it stamps `rodeoSession`/`rodeoPort` onto the
 /// Workspace so the static plugin connects to this launch's serve port and
 /// reports its session on the WS handshake, and installs the command-bar
-/// bridge that `--context cmdbar` runs through.
+/// bridge that `--context cmd` runs through.
 fn write_bootstrap_script(session_guid: &str, port: u16) -> Result<PathBuf> {
     // Absolute path: Studio's working directory differs from rodeo's, so
     // `-runScriptFile` must be absolute (a relative path makes Studio report
@@ -482,8 +482,8 @@ fn write_bootstrap_script(session_guid: &str, port: u16) -> Result<PathBuf> {
 }
 
 /// Name of the BindableFunction the bootstrap parents under CoreGui. The
-/// plugin's runner looks it up by this name for `--context cmdbar`.
-const CMDBAR_BRIDGE_NAME: &str = "rodeoCmdbar";
+/// plugin's runner looks it up by this name for `--context cmd`.
+const CMD_BRIDGE_NAME: &str = "rodeoCmd";
 
 /// The bootstrap's Luau source. Studio runs `-runScriptFile` once in the edit
 /// DOM at command-bar identity (4 — verified on 0.738: `DebuggerManager()`
@@ -492,10 +492,10 @@ const CMDBAR_BRIDGE_NAME: &str = "rodeoCmdbar";
 /// 1. Stamp the launch attributes the static plugin reads.
 /// 2. Install the command-bar bridge: a BindableFunction whose `OnInvoke`
 ///    keeps its creator's identity when the plugin (identity 5) invokes it, so
-///    `--context cmdbar` runs the user module at command-bar identity with no
+///    `--context cmd` runs the user module at command-bar identity with no
 ///    StudioMCP hop. The edit DOM's identities share one Luau VM, so the
 ///    result is handed back through the plugin's namespace in `_G`
-///    (`_G.__rodeo_plugins[<build>-<port>].cmdbar`) rather than the Bindable
+///    (`_G.__rodeo_plugins[<build>-<port>].cmd`) rather than the Bindable
 ///    return (which deep-copies tables and rejects functions).
 ///    `Archivable = false` under CoreGui keeps it out of saves and out of
 ///    play-mode clones.
@@ -516,20 +516,20 @@ bridge.OnInvoke = function(module, executionId)
 	end, module)
 	local plugins = _G.__rodeo_plugins or {{}}
 	_G.__rodeo_plugins = plugins
-	local ns = plugins["{key}"] or {{ procs = {{}}, cmdbar = {{}} }}
+	local ns = plugins["{key}"] or {{ procs = {{}}, cmd = {{}} }}
 	plugins["{key}"] = ns
-	ns.cmdbar[executionId] = {{ ok = ok, result = result }}
+	ns.cmd[executionId] = {{ ok = ok, result = result }}
 	return ok
 end
 bridge.Parent = game:GetService("CoreGui")
 "#,
-        bridge = CMDBAR_BRIDGE_NAME,
+        bridge = CMD_BRIDGE_NAME,
         key = plugin_key(build, port),
     )
 }
 
 /// The plugin instance's key in the edit VM's `_G.__rodeo_plugins`, which
-/// the bootstrap's bridge uses to hand cmdbar results to the right plugin.
+/// the bootstrap's bridge uses to hand cmd results to the right plugin.
 /// Must match `constants.PLUGIN_KEY` in the plugin: `<build>-<port>`.
 fn plugin_key(build: &str, port: u16) -> String {
     format!("{build}-{port}")
@@ -540,11 +540,11 @@ mod bootstrap_tests {
     use super::*;
 
     #[test]
-    fn bootstrap_stamps_attributes_and_installs_cmdbar_bridge() {
+    fn bootstrap_stamps_attributes_and_installs_cmd_bridge() {
         let src = bootstrap_source("abc-123", 44901, "1.2.3+abcdef0");
         assert!(src.contains(r#"ws:SetAttribute("rodeoSession", "abc-123")"#), "{src}");
         assert!(src.contains(r#"ws:SetAttribute("rodeoPort", 44901)"#), "{src}");
-        assert!(src.contains(r#"bridge.Name = "rodeoCmdbar""#), "{src}");
+        assert!(src.contains(r#"bridge.Name = "rodeoCmd""#), "{src}");
         assert!(src.contains(r#"bridge:SetAttribute("rodeoBuild", "1.2.3+abcdef0")"#), "{src}");
         // The bridge hands results to the plugin instance's namespace, keyed
         // exactly as constants.PLUGIN_KEY builds it.

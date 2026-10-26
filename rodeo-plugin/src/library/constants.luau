@@ -13,7 +13,7 @@ local PORT: number = if type(bakedPort) == "number" then bakedPort else DEFAULT_
 -- This plugin instance's key in `_G.__rodeo_plugins`. Every plugin in a DOM
 -- shares one Luau VM and one _G, so per-plugin state lives in a table keyed
 -- by build and port instead of flat globals. The launch bootstrap computes the
--- same key in Rust (`plugin_key` in launch.rs) to hand cmdbar results back.
+-- same key in Rust (`plugin_key` in launch.rs) to hand cmd results back.
 local PLUGIN_KEY = `{RODEO_BUILD_ID}-{PORT}`
 -- This plugin's file in Studio's plugins folder, as the backend names it
 -- (`plugin_file_name` in launch.rs). A rojo-served dev plugin has no file.

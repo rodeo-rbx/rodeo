@@ -39,11 +39,11 @@ describe("run errors (API)", () => {
 
   it("the runner's own error is result.error and in the output", async () => {
     // Hide this Studio's command-bar bridge, as a hand-opened Studio has none.
-    const hide = await run({ source: 'game:GetService("CoreGui").rodeoCmdbar.Name = "rodeoCmdbarHidden" return true' });
+    const hide = await run({ source: 'game:GetService("CoreGui").rodeoCmd.Name = "rodeoCmdHidden" return true' });
     expect(hide.ok, hide.output).toBe(true);
-    const r = await run({ source: "return 1", context: "cmdbar" });
+    const r = await run({ source: "return 1", context: "cmd" });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain("cmdbar context needs a rodeo-launched Studio");
-    expect(occurrences(r.output, "cmdbar context needs a rodeo-launched Studio"), r.output).toBe(1);
+    expect(r.error).toContain("cmd context needs a rodeo-launched Studio");
+    expect(occurrences(r.output, "cmd context needs a rodeo-launched Studio"), r.output).toBe(1);
   });
 });

@@ -321,7 +321,7 @@ message SubmitRequest {
   optional string session = 3;
   optional string dom_id = 4;
   optional string dom_kind = 15; // server | client
-  optional string context = 16;  // plugin | server | client | mcp | cmdbar (cf. Script.RunContext)
+  optional string context = 16;  // plugin | server | client | mcp | cmd (cf. Script.RunContext)
   // Re-evaluate instance requires instead of reusing the VM's require cache.
   // Absent = cached (Roblox's own semantics): a require resolves to the live
   // module the surrounding game is already using. Set = the plugin clones the
@@ -535,7 +535,7 @@ message ProcessInfo {
   // Resolved route. mode/dom_kind are empty for dom_id-pinned runs (no
   // routing happened); context is always set (plugin default).
   string mode = 3;                   // edit | run | test | play
-  string context = 4;                // plugin | server | client | mcp | cmdbar
+  string context = 4;                // plugin | server | client | mcp | cmd
   string dom_kind = 9;               // edit | server | client
   // Where the run executes — set once dispatched, absent while queued.
   optional string studio_id = 5;
@@ -656,7 +656,7 @@ message RunCommand {
   string execution_id = 1;
   string script = 2;
   // Run context the code executes as: plugin | server | client | mcp |
-  // cmdbar (empty → plugin). Mode/dom-kind never reach the plugin — the master
+  // cmd (empty → plugin). Mode/dom-kind never reach the plugin — the master
   // resolved those when it picked the DOM this command is sent to.
   string context = 3;
   reserved 4, 5, 6, 7, 8;    // old flat enable_warn/error/info/output/logs

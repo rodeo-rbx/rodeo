@@ -22,7 +22,7 @@ pub struct RunCodeOpts {
     pub mode: Option<String>,
     /// Which DOM role receives the script: "server" | "client".
     pub dom_kind: Option<String>,
-    /// Run context: "plugin" | "server" | "client" | "mcp" | "cmdbar".
+    /// Run context: "plugin" | "server" | "client" | "mcp" | "cmd".
     pub context: Option<String>,
     pub show_return: bool,
     pub reload_requires: bool,

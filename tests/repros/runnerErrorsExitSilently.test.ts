@@ -1,6 +1,6 @@
 // Repro (issue #34): errors the runner raises itself, rather than the user's
 // module, reached only ExecutionDone.error, which no client prints. So
-// `--context cmdbar` on a Studio without the launch bootstrap's bridge (one
+// `--context cmd` on a Studio without the launch bootstrap's bridge (one
 // opened by hand), or `--context mcp` on a Studio StudioMCP doesn't
 // know, exited 1 with no output at all.
 //
@@ -38,11 +38,11 @@ describe("runner errors reach the terminal once (issue #34)", () => {
     expect(occurrences(output, "rodeo-34-module-error"), output).toBe(1);
   });
 
-  it("a module error under cmdbar is printed once", () => {
-    const r = run(["--context", "cmdbar", "--source", "error('rodeo-34-cmdbar-error')"]);
+  it("a module error under cmd is printed once", () => {
+    const r = run(["--context", "cmd", "--source", "error('rodeo-34-cmd-error')"]);
     const output = r.stdout + r.stderr;
     expect(r.exitCode, output).toBe(1);
-    expect(occurrences(output, "rodeo-34-cmdbar-error"), output).toBe(1);
+    expect(occurrences(output, "rodeo-34-cmd-error"), output).toBe(1);
   });
 
   it("a module error under mcp is printed once", () => {
@@ -52,25 +52,25 @@ describe("runner errors reach the terminal once (issue #34)", () => {
     expect(occurrences(output, "rodeo-34-mcp-error"), output).toBe(1);
   });
 
-  it("cmdbar on a Studio without the bridge says why", () => {
+  it("cmd on a Studio without the bridge says why", () => {
     // A hand-opened Studio has no bridge. Renaming this one's gives the same
     // Studio without opening one by hand; the Studio is this file's own.
     const hide = run([
       "--source",
-      'game:GetService("CoreGui").rodeoCmdbar.Name = "rodeoCmdbarHidden" return true',
+      'game:GetService("CoreGui").rodeoCmd.Name = "rodeoCmdHidden" return true',
     ]);
     expect(hide.exitCode, hide.stdout + hide.stderr).toBe(0);
 
-    const r = run(["--context", "cmdbar", "--source", "return 1"]);
+    const r = run(["--context", "cmd", "--source", "return 1"]);
     expect(r.exitCode, r.stdout + r.stderr).toBe(1);
     // FAILS before the fix: exit 1 with empty stdout and stderr.
-    expect(occurrences(r.stderr, "cmdbar context needs a rodeo-launched Studio"), r.stderr).toBe(1);
+    expect(occurrences(r.stderr, "cmd context needs a rodeo-launched Studio"), r.stderr).toBe(1);
   });
 
   it("--no-error hides the run's error too", () => {
     // The bridge is still hidden from the case above.
-    const r = run(["--context", "cmdbar", "--no-error", "--source", "return 1"]);
+    const r = run(["--context", "cmd", "--no-error", "--source", "return 1"]);
     expect(r.exitCode, r.stdout + r.stderr).toBe(1);
-    expect(occurrences(r.stderr, "cmdbar context needs a rodeo-launched Studio"), r.stderr).toBe(0);
+    expect(occurrences(r.stderr, "cmd context needs a rodeo-launched Studio"), r.stderr).toBe(0);
   });
 });

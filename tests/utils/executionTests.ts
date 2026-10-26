@@ -588,53 +588,53 @@ export function targetIdentity(run: RunFn): void {
     expect(result.ok).toBe(false);
   });
 
-  // cmdbar — command-bar identity through the BindableFunction bridge the
+  // cmd — command-bar identity through the BindableFunction bridge the
   // launch bootstrap installs (no StudioMCP). The harness launches its Studio
   // through rodeo, so the bridge is present.
-  it("edit:cmdbar runs at command-bar identity (4)", async () => {
+  it("edit:cmd runs at command-bar identity (4)", async () => {
     const result = await run({
-      context: "cmdbar",
+      context: "cmd",
       source: 'printidentity("identity:") return true',
     });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("identity: 4");
   });
 
-  it("edit:cmdbar can access DebuggerManager", async () => {
+  it("edit:cmd can access DebuggerManager", async () => {
     const result = await run({
-      context: "cmdbar",
+      context: "cmd",
       source: "return tostring(DebuggerManager())",
     });
     expect(result.ok).toBe(true);
     expect(String(result.return)).toContain("DebuggerManager");
   });
 
-  it("edit:cmdbar can use @rodeo/fs", async () => {
+  it("edit:cmd can use @rodeo/fs", async () => {
     const result = await run({
-      context: "cmdbar",
+      context: "cmd",
       source: 'return require("@rodeo/fs").exists(".")',
     });
     expect(result.ok).toBe(true);
     expect(result.return).toBe(true);
   });
 
-  it("edit:cmdbar returns values like the plugin context", async () => {
+  it("edit:cmd returns values like the plugin context", async () => {
     // The bridge hands the raw value back through _G (shared VM), so nested
     // tables and arrays survive without a JSON detour.
     const result = await run({
-      context: "cmdbar",
+      context: "cmd",
       source: 'return { n = 1, s = "two", list = { 1, 2, 3 }, nested = { ok = true } }',
     });
     expect(result.ok).toBe(true);
     expect(result.return).toEqual({ n: 1, s: "two", list: [1, 2, 3], nested: { ok: true } });
   });
 
-  it("edit:cmdbar propagates errors", async () => {
-    const result = await run({ context: "cmdbar", source: 'error("boom")' });
+  it("edit:cmd propagates errors", async () => {
+    const result = await run({ context: "cmd", source: 'error("boom")' });
     expect(result.ok).toBe(false);
   });
 
-  it("plugin context stays at identity 5 (cmdbar is opt-in)", async () => {
+  it("plugin context stays at identity 5 (cmd is opt-in)", async () => {
     const result = await run({ source: 'printidentity("identity:") return true' });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("identity: 5");

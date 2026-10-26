@@ -6,7 +6,7 @@
 //! share instances, cross-DOM needs remotes), and the `context` (the *identity
 //! level* the code runs at, each an independent Luau VM on the DOM — cf.
 //! Roblox's `Script.RunContext` Server/Client/Plugin, plus two privileged
-//! identities: `mcp` (StudioMCP's execute_luau, any DOM) and `cmdbar` (the
+//! identities: `mcp` (StudioMCP's execute_luau, any DOM) and `cmd` (the
 //! command bar via the launch bootstrap's bridge, edit DOM only); NOT a script
 //! class).
 //! `resolve()` applies the defaults table and validates the combination; the
@@ -21,7 +21,7 @@ pub enum RunContext {
     Server,
     Client,
     Mcp,
-    Cmdbar,
+    Cmd,
 }
 
 impl RunContext {
@@ -31,7 +31,7 @@ impl RunContext {
             Self::Server => "server",
             Self::Client => "client",
             Self::Mcp => "mcp",
-            Self::Cmdbar => "cmdbar",
+            Self::Cmd => "cmd",
         }
     }
 
@@ -41,8 +41,8 @@ impl RunContext {
             "server" => Ok(Self::Server),
             "client" => Ok(Self::Client),
             "mcp" => Ok(Self::Mcp),
-            "cmdbar" => Ok(Self::Cmdbar),
-            _ => bail!("unknown context '{s}' — expected plugin, server, client, mcp, or cmdbar"),
+            "cmd" => Ok(Self::Cmd),
+            _ => bail!("unknown context '{s}' — expected plugin, server, client, mcp, or cmd"),
         }
     }
 }
@@ -159,7 +159,7 @@ impl RouteSpec {
     /// Defaults:
     /// - `mode` omitted: `edit`.
     /// - `dom_kind` omitted: from `context` (server→server, client→client,
-    ///   cmdbar→edit); for plugin/mcp (or none) by mode: edit→edit,
+    ///   cmd→edit); for plugin/mcp (or none) by mode: edit→edit,
     ///   run/test/play→server.
     /// - `context` omitted: the native context of the resolved dom kind
     ///   (edit→plugin, server→server, client→client).
@@ -173,8 +173,8 @@ impl RouteSpec {
         let dom_kind = self.dom_kind.unwrap_or(match self.context {
             Some(C::Server) => K::Server,
             Some(C::Client) => K::Client,
-            // cmdbar lives only on the edit DOM (its bridge is installed there)
-            Some(C::Cmdbar) => K::Edit,
+            // cmd lives only on the edit DOM (its bridge is installed there)
+            Some(C::Cmd) => K::Edit,
             // plugin / mcp / unspecified: the mode's primary DOM
             _ => match mode {
                 M::Edit => K::Edit,
@@ -205,8 +205,8 @@ impl RouteSpec {
         }
 
         if !context_fits(context, dom_kind) {
-            let hint = if context == C::Cmdbar {
-                " — cmdbar's bridge lives only on the edit DOM; use --dom edit, or --context mcp"
+            let hint = if context == C::Cmd {
+                " — the cmd context's bridge lives only on the edit DOM; use --dom edit, or --context mcp"
             } else {
                 ""
             };
@@ -244,7 +244,7 @@ fn context_fits(context: RunContext, kind: DomKind) -> bool {
     use DomKind as K;
     use RunContext as C;
     match kind {
-        K::Edit => matches!(context, C::Plugin | C::Mcp | C::Cmdbar),
+        K::Edit => matches!(context, C::Plugin | C::Mcp | C::Cmd),
         K::Server => matches!(context, C::Server | C::Plugin | C::Mcp),
         K::Client => matches!(context, C::Client | C::Plugin | C::Mcp),
     }
@@ -252,13 +252,13 @@ fn context_fits(context: RunContext, kind: DomKind) -> bool {
 
 /// Whether a pinned run's context can run on the pinned DOM, given the DOM's
 /// actual kind. Plugin and mcp fit every DOM; server and client need their
-/// own DOM kind; cmdbar needs the edit DOM.
+/// own DOM kind; cmd needs the edit DOM.
 pub fn check_pinned_context(context: RunContext, kind: DomKind) -> Result<()> {
     if context_fits(context, kind) {
         return Ok(());
     }
     let hint = match context {
-        RunContext::Cmdbar => " — cmdbar's bridge lives only on the edit DOM",
+        RunContext::Cmd => " — the cmd context's bridge lives only on the edit DOM",
         _ => "",
     };
     bail!(
@@ -308,10 +308,10 @@ mod tests {
             (spec(Some(M::Test), Some(K::Edit), None), (M::Test, K::Edit, C::Plugin)),
             (spec(Some(M::Play), Some(K::Edit), None), (M::Play, K::Edit, C::Plugin)),
             (spec(Some(M::Test), Some(K::Edit), Some(C::Mcp)), (M::Test, K::Edit, C::Mcp)),
-            // cmdbar implies the edit DOM in every mode (its bridge lives there)
-            (spec(None, None, Some(C::Cmdbar)), (M::Edit, K::Edit, C::Cmdbar)),
-            (spec(Some(M::Test), None, Some(C::Cmdbar)), (M::Test, K::Edit, C::Cmdbar)),
-            (spec(Some(M::Play), Some(K::Edit), Some(C::Cmdbar)), (M::Play, K::Edit, C::Cmdbar)),
+            // cmd implies the edit DOM in every mode (its bridge lives there)
+            (spec(None, None, Some(C::Cmd)), (M::Edit, K::Edit, C::Cmd)),
+            (spec(Some(M::Test), None, Some(C::Cmd)), (M::Test, K::Edit, C::Cmd)),
+            (spec(Some(M::Play), Some(K::Edit), Some(C::Cmd)), (M::Play, K::Edit, C::Cmd)),
             // mode alone → primary DOM + native context
             (spec(Some(M::Run), None, None), (M::Run, K::Server, C::Server)),
             (spec(Some(M::Test), None, None), (M::Test, K::Server, C::Server)),
@@ -356,9 +356,9 @@ mod tests {
             // edit DOM hosts only plugin/mcp — not server/client contexts
             spec(Some(M::Test), Some(K::Edit), Some(C::Server)),
             spec(Some(M::Test), Some(K::Edit), Some(C::Client)),
-            // cmdbar never runs on a server/client DOM
-            spec(Some(M::Test), Some(K::Server), Some(C::Cmdbar)),
-            spec(Some(M::Play), Some(K::Client), Some(C::Cmdbar)),
+            // cmd never runs on a server/client DOM
+            spec(Some(M::Test), Some(K::Server), Some(C::Cmd)),
+            spec(Some(M::Play), Some(K::Client), Some(C::Cmd)),
         ];
         for input in cases {
             assert!(input.resolve().is_err(), "{input:?} should be invalid");
@@ -380,8 +380,8 @@ mod tests {
             spec(None, Some(K::Edit), None)
         );
         assert_eq!(
-            RouteSpec::from_strings(None, None, Some("cmdbar")).unwrap(),
-            spec(None, None, Some(C::Cmdbar))
+            RouteSpec::from_strings(None, None, Some("cmd")).unwrap(),
+            spec(None, None, Some(C::Cmd))
         );
         // unknown words error
         assert!(RouteSpec::from_strings(Some("editt"), None, None).is_err());
@@ -394,7 +394,7 @@ mod tests {
     // pinned runs must not go through it.
     #[test]
     fn pinned_specs_allow_any_context_but_no_mode_or_dom() {
-        for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Mcp), Some(C::Cmdbar)] {
+        for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Mcp), Some(C::Cmd)] {
             let s = spec(None, None, context);
             s.validate_pinned().unwrap_or_else(|e| panic!("{s:?}: {e}"));
         }
@@ -409,12 +409,12 @@ mod tests {
         let fits: &[(C, K)] = &[
             (C::Plugin, K::Edit), (C::Plugin, K::Server), (C::Plugin, K::Client),
             (C::Mcp, K::Edit), (C::Mcp, K::Server), (C::Mcp, K::Client),
-            (C::Server, K::Server), (C::Client, K::Client), (C::Cmdbar, K::Edit),
+            (C::Server, K::Server), (C::Client, K::Client), (C::Cmd, K::Edit),
         ];
         let misfits: &[(C, K)] = &[
             (C::Server, K::Edit), (C::Server, K::Client),
             (C::Client, K::Edit), (C::Client, K::Server),
-            (C::Cmdbar, K::Server), (C::Cmdbar, K::Client),
+            (C::Cmd, K::Server), (C::Cmd, K::Client),
         ];
         for (c, k) in fits {
             check_pinned_context(*c, *k).unwrap_or_else(|e| panic!("{c:?} on {k:?}: {e}"));
@@ -425,6 +425,6 @@ mod tests {
         }
         // Only contexts that fit some kinds but not others wait for the kind.
         assert!(!C::Plugin.depends_on_dom_kind() && !C::Mcp.depends_on_dom_kind());
-        assert!(C::Server.depends_on_dom_kind() && C::Client.depends_on_dom_kind() && C::Cmdbar.depends_on_dom_kind());
+        assert!(C::Server.depends_on_dom_kind() && C::Client.depends_on_dom_kind() && C::Cmd.depends_on_dom_kind());
     }
 }

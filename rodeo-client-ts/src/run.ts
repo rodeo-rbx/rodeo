@@ -30,7 +30,7 @@ type CommonRunOpts = {
    *  "lute": `@lute/*`, `@std/*`, `@batteries/*`). Same as `--adapter`. */
   adapters?: ("lune" | "lute")[];
   /** Run context the code executes as (cf. Roblox Script.RunContext). */
-  context?: "plugin" | "server" | "client" | "mcp" | "cmdbar";
+  context?: "plugin" | "server" | "client" | "mcp" | "cmd";
   showReturn?: boolean;
   reloadRequires?: boolean;
   verbose?: boolean;

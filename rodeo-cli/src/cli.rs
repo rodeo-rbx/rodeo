@@ -14,7 +14,7 @@ pub enum DomKindArg { Edit, Server, Client }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 #[value(rename_all = "lowercase")]
-pub enum ContextArg { Plugin, Server, Client, Mcp, Cmdbar }
+pub enum ContextArg { Plugin, Server, Client, Mcp, Cmd }
 
 impl ModeArg {
     pub fn as_str(self) -> &'static str {
@@ -28,7 +28,7 @@ impl DomKindArg {
 }
 impl ContextArg {
     pub fn as_str(self) -> &'static str {
-        match self { Self::Plugin => "plugin", Self::Server => "server", Self::Client => "client", Self::Mcp => "mcp", Self::Cmdbar => "cmdbar" }
+        match self { Self::Plugin => "plugin", Self::Server => "server", Self::Client => "client", Self::Mcp => "mcp", Self::Cmd => "cmd" }
     }
 }
 
@@ -132,7 +132,7 @@ pub enum Commands {
         /// Identity level the code executes at: plugin, server (server-runtime
         /// identity), client (client-runtime identity), mcp (Studio MCP's
         /// execute_luau identity — any DOM, needs Studio's MCP server), or
-        /// cmdbar (command bar via the launch bootstrap's bridge — edit DOM of
+        /// cmd (command bar via the launch bootstrap's bridge — edit DOM of
         /// a rodeo-launched Studio, no MCP server needed).
         #[arg(long, value_enum, help_heading = "Targeting")]
         context: Option<ContextArg>,

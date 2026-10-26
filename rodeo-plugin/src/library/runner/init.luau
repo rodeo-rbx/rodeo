@@ -41,7 +41,7 @@ local runtime = require(ref("runtimeProto"))
 -- one _G, and this runner may be in a VM the plugin itself never touched (a
 -- play DOM's game VM for run:server/client), so the runner creates the table
 -- when needed. Per-plugin state lives here: `procs` (run id → the run's API
--- tables, read by the inlined @rodeo/* shims) and `cmdbar` (results the launch
+-- tables, read by the inlined @rodeo/* shims) and `cmd` (results the launch
 -- bootstrap's bridge hands back). Never a "current run": one plugin runs
 -- several runs at once, so per-run identity comes from the attributes the
 -- runtime stamps on each run's module.
@@ -49,7 +49,7 @@ local pluginKey: string = params.pluginKey
 _G.__rodeo_plugins = _G.__rodeo_plugins or {}
 local ns = _G.__rodeo_plugins[pluginKey]
 if not ns then
-	ns = { procs = {}, cmdbar = {} }
+	ns = { procs = {}, cmd = {} }
 	_G.__rodeo_plugins[pluginKey] = ns
 end
 
@@ -179,7 +179,7 @@ local success, result = xpcall(function()
 			end
 		end
 		return r.result
-	elseif context == "cmdbar" then
+	elseif context == "cmd" then
 		-- Command-bar identity without StudioMCP. The launch bootstrap (a
 		-- `-runScriptFile`, itself run at command-bar identity) parents a
 		-- BindableFunction under CoreGui whose OnInvoke keeps that identity
@@ -188,10 +188,10 @@ local success, result = xpcall(function()
 		-- hands the raw result back through this plugin's namespace in _G
 		-- rather than the Bindable return (which deep-copies tables and rejects
 		-- functions): return values behave exactly like the plugin context's.
-		local bridge = game:GetService("CoreGui"):FindFirstChild("rodeoCmdbar")
+		local bridge = game:GetService("CoreGui"):FindFirstChild("rodeoCmd")
 		if not bridge then
 			error(
-				"cmdbar context needs a rodeo-launched Studio: the launch bootstrap installs the "
+				"cmd context needs a rodeo-launched Studio: the launch bootstrap installs the "
 					.. "command-bar bridge, and this Studio has none (opened by hand, or launched by an "
 					.. "older rodeo). Use --context mcp instead.",
 				0
@@ -204,17 +204,17 @@ local success, result = xpcall(function()
 		local pluginBuild = params.pluginBuild
 		if bridgeBuild ~= nil and pluginBuild ~= nil and bridgeBuild ~= pluginBuild then
 			error(
-				`cmdbar bridge belongs to rodeo build {bridgeBuild}, this plugin is {pluginBuild}: `
+				`command-bar bridge belongs to rodeo build {bridgeBuild}, this plugin is {pluginBuild}: `
 					.. "the Studio was launched by another rodeo serve — run against that serve's port.",
 				0
 			)
 		end
 		bridge:Invoke(module, executionId)
-		local slot = ns.cmdbar[executionId]
+		local slot = ns.cmd[executionId]
 		if not slot then
-			error("cmdbar bridge returned no result for this run", 0)
+			error("command-bar bridge returned no result for this run", 0)
 		end
-		ns.cmdbar[executionId] = nil
+		ns.cmd[executionId] = nil
 		if not slot.ok then
 			error(slot.result, 0)
 		end

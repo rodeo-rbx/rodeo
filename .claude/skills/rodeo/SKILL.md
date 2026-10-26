@@ -88,10 +88,10 @@ Run a script in Studio.
 - `<script>` — path to script, or `-` for stdin. Any name without a `.` resolves to `.rodeo/<name>.luau` when that file exists — nested paths included (`rodeo run tests/smoke` → `.rodeo/tests/smoke.luau`)
 - `-s` / `--source <code>` — execute inline source code
 - `--mode edit|run|test|play` — Studio mode (auto-transitions, ending a running session of another kind first; the only flag that does). Defaults to edit; never inferred from --context/--dom, so a server/client run must pass --mode. An explicit `--mode edit` ends a running session; omitting `--mode` leaves it running
-- `--context plugin|server|client|mcp|cmdbar` — the identity level to run at: plugin, server-runtime identity, client-runtime identity, StudioMCP's `execute_luau` identity (mcp; any DOM), or command bar via the launch bootstrap's bridge (cmdbar; edit DOM of a rodeo-launched Studio only). Not a script class
+- `--context plugin|server|client|mcp|cmd` — the identity level to run at: plugin, server-runtime identity, client-runtime identity, StudioMCP's `execute_luau` identity (mcp; any DOM), or command bar via the launch bootstrap's bridge (cmd; edit DOM of a rodeo-launched Studio only). Not a script class
 - `--dom edit|server|client` — which DOM (usually inferred); `edit` targets the edit DOM even while a test/play session runs
 - `--studio-id <id>` — scope routing to one studio (id from `rodeo state`; unique prefix ok)
-- `--dom-id <id>` — pin the run to one DOM (id from `rodeo state`; unique prefix ok), including a server or client DOM of a running session. Only `--context` may accompany it, and it must fit the DOM: `server` needs a server DOM, `client` a client DOM, `cmdbar` the edit DOM; `plugin` (the default) and `mcp` fit any
+- `--dom-id <id>` — pin the run to one DOM (id from `rodeo state`; unique prefix ok), including a server or client DOM of a running session. Only `--context` may accompany it, and it must fit the DOM: `server` needs a server DOM, `client` a client DOM, `cmd` the edit DOM; `plugin` (the default) and `mcp` fit any
 - `--show-return` — print return value to stdout (any size)
 - `--return <path>` — write return value to file: `.luau`/`.lua` emits Luau source, anything else JSON. Size-unbounded.
 - `--output <path>` — write execution output (prints/logs) to file
@@ -189,7 +189,7 @@ identity to run at.
   - `server` — the identity server-side code runs at when the game is running
   - `client` — the identity client-side code runs at when running (LocalScripts / `RunContext = Client`)
   - `mcp` — the identity StudioMCP's `execute_luau` runs at, for privileged APIs; works on any DOM, needs Studio's MCP server
-  - `cmdbar` — command-bar identity (via the BindableFunction bridge the launch bootstrap installs), no StudioMCP; edit DOM only, and only in a Studio rodeo launched
+  - `cmd` — command-bar identity (via the BindableFunction bridge the launch bootstrap installs), no StudioMCP; edit DOM only, and only in a Studio rodeo launched
 
   Each context is an **independent Luau VM** on the DOM with its own global
   state. Contexts cannot read each other's Luau values, so they coordinate
@@ -210,7 +210,7 @@ Read each row as (studio mode, which DOM, at which identity):
 | *(none)* | edit DOM, plugin identity (default) |
 | `--mode edit` | edit DOM, plugin identity, after ending a running run/test/play session |
 | `--context mcp` | edit DOM, StudioMCP identity (needs Studio's MCP server) |
-| `--context cmdbar` | edit DOM, command-bar identity (via the launch bootstrap; no StudioMCP) |
+| `--context cmd` | edit DOM, command-bar identity (via the launch bootstrap; no StudioMCP) |
 | `--mode run --context server` | run mode, server DOM, server identity |
 | `--mode test --context server` | play test, server DOM, server identity |
 | `--mode test --context client` | play test, client DOM, client identity |
@@ -642,8 +642,8 @@ Patterns that pay off when you use rodeo to reproduce a bug and prove a fix:
 
 - `--mode run|test|play` when the studio isn't already in that mode → auto-transitions, ending the current session first (run ↔ test ↔ play); `--mode edit` ends it without starting another. If Studio refuses the transition, the queued runs fail (exit 2, `rodeo: run disconnected: Studio <id> could not enter <mode> mode: <reason>`) instead of waiting forever
 - `--context mcp` requires Studio's MCP server (AI Assistant) — rodeo runs the code through StudioMCP's `execute_luau`
-- **`--context mcp` can hang ~10s and fail if the Studio never connected to StudioMCP** — the Assistant plugin only opens its MCP socket when the Assistant panel is opened, and `mcp-server.enabled=true` alone doesn't guarantee it (github.com/revvy02/rodeo issue #4). Recovery: open the AI Assistant panel in that Studio, or use `--context cmdbar` for edit-DOM work
-- `--context cmdbar` needs a Studio that rodeo launched (`--place`, or a serve-launched Studio): the launch bootstrap installs its bridge. A hand-opened Studio fails immediately with a message saying so
+- **`--context mcp` can hang ~10s and fail if the Studio never connected to StudioMCP** — the Assistant plugin only opens its MCP socket when the Assistant panel is opened, and `mcp-server.enabled=true` alone doesn't guarantee it (github.com/revvy02/rodeo issue #4). Recovery: open the AI Assistant panel in that Studio, or use `--context cmd` for edit-DOM work
+- `--context cmd` needs a Studio that rodeo launched (`--place`, or a serve-launched Studio): the launch bootstrap installs its bridge. A hand-opened Studio fails immediately with a message saying so
 - Luau hotcomments work, including via `--source` — put `--!native` at the top of a script for a large speedup on numeric code
 - `rodeo setup` must be run once per project for `@rodeo/*` imports
 - Return values >2MiB without a `--return` file fail the run by design — pass a file path for big payloads

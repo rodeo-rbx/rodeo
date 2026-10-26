@@ -18,7 +18,7 @@ export type DomRunCodeOpts = {
 	-- resolve to rodeo's implementations ("lune": @lune/*; "lute": @lute/*,
 	-- @std/*, @batteries/*). Same as `--adapter`.
 	adapters: { "lune" | "lute" }?,
-	context: ("plugin" | "server" | "client" | "mcp" | "cmdbar")?,
+	context: ("plugin" | "server" | "client" | "mcp" | "cmd")?,
 	showReturn: boolean?,
 	reloadRequires: boolean?,
 	verbose: boolean?,

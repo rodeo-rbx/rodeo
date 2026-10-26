@@ -1039,7 +1039,7 @@ export type SubmitRequest = Message<"rodeo.SubmitRequest"> & {
   domKind?: string | undefined;
 
   /**
-   * plugin | server | client | mcp | cmdbar (cf. Script.RunContext)
+   * plugin | server | client | mcp | cmd (cf. Script.RunContext)
    *
    * @generated from field: optional string context = 16;
    */
@@ -1872,7 +1872,7 @@ export type ProcessInfo = Message<"rodeo.ProcessInfo"> & {
   mode: string;
 
   /**
-   * plugin | server | client | mcp | cmdbar
+   * plugin | server | client | mcp | cmd
    *
    * @generated from field: string context = 4;
    */
@@ -2308,7 +2308,7 @@ export type RunCommand = Message<"rodeo.RunCommand"> & {
 
   /**
    * Run context the code executes as: plugin | server | client | mcp |
-   * cmdbar (empty → plugin). Mode/dom-kind never reach the plugin — the master
+   * cmd (empty → plugin). Mode/dom-kind never reach the plugin — the master
    * resolved those when it picked the DOM this command is sent to.
    *
    * @generated from field: string context = 3;
