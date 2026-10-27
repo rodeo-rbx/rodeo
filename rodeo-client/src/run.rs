@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::proto;
@@ -319,6 +319,9 @@ async fn message_loop(
     };
 
     let mut rpc_tasks: Vec<JoinHandle<()>> = Vec::new();
+    // Per stream handle, resolved once the last call queued on it is answered
+    // (see stream_handle).
+    let mut stream_turns: HashMap<String, oneshot::Receiver<()>> = HashMap::new();
     let mut file_buffers: HashMap<String, Vec<u8>> = HashMap::new();
     let mut exit_code = 0;
     let mut ok = true;
@@ -346,12 +349,28 @@ async fn message_loop(
                                     // Queued now, so a runtime bridge gets the script's
                                     // calls in order: the tasks answering them run in any.
                                     bridges.enqueue(&call);
+                                    // A write or close on a stream handle waits for the
+                                    // call before it on that handle, so output keeps the
+                                    // order the script wrote it in.
+                                    let turn = stream_handle(&call).map(|handle| {
+                                        let (done, next) = oneshot::channel::<()>();
+                                        (stream_turns.insert(handle.to_string(), next), done)
+                                    });
                                     let state = rpc_state.clone();
                                     let tx = response_tx.clone();
                                     let observer = event_tx.clone();
                                     let call_boxed = call.clone();
                                     let handle = tokio::spawn(async move {
                                         let _ = observer.send(RunStreamEvent::RpcCall { call: Box::new(*call_boxed) });
+                                        let done = match turn {
+                                            Some((previous, done)) => {
+                                                if let Some(previous) = previous {
+                                                    let _ = previous.await;
+                                                }
+                                                Some(done)
+                                            }
+                                            None => None,
+                                        };
                                         // process.exit: the script suspends plugin-side after this
                                         // notify — ending the run is the client's job. Reuse the
                                         // kill path (the master forwards it to the DOM); the final
@@ -362,6 +381,9 @@ async fn message_loop(
                                         );
                                         let eid = call.execution_id.clone();
                                         let response = runtime::dispatch_client(state, &call).await;
+                                        if let Some(done) = done {
+                                            let _ = done.send(());
+                                        }
                                         let _ = tx.send(proto::RunClientMessage {
                                             msg: Some(proto::run_client_message::Msg::RpcResponse(Box::new(response))),
                                             ..Default::default()
@@ -581,6 +603,22 @@ async fn message_loop(
             let temp_dir = std::path::Path::new(&content_path).join("rodeo-temp").join(eid);
             if temp_dir.exists() { let _ = std::fs::remove_dir_all(&temp_dir); }
         }
+    }
+}
+
+/// The stream handle a write or close call acts on. Calls on one handle are
+/// answered in the order they arrive: concurrent Luau threads have several in
+/// flight at once (every line Studio logs is its own write, from its own
+/// MessageOut handler), and answered in separate tasks they'd race. Each
+/// handle waits only for its own calls, so a write blocked on a child's stdin
+/// doesn't hold up stdout.
+fn stream_handle(call: &rodeo_proto::runtime_types::ClientRpcCall) -> Option<&str> {
+    use rodeo_proto::runtime_types::client_rpc_call::Req;
+    match &call.req {
+        Some(Req::StreamWrite(r)) => Some(&r.handle),
+        Some(Req::StreamWriteBytes(r)) => Some(&r.handle),
+        Some(Req::StreamClose(r)) => Some(&r.handle),
+        _ => None,
     }
 }
 
