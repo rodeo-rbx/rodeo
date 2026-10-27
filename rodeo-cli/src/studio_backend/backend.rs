@@ -820,7 +820,7 @@ async fn handle_master_msg(
                 let exit_session_guid = session_guid.clone();
                 let exit_out_tx = out_tx.clone();
                 let exit_instance = instance.clone();
-                instance.on_exit(move |_status| {
+                instance.on_exit(move |exit_status| {
                     // Determine reason: was status still "launching" when we died?
                     // (i.e. plugin never connected) — call it launch_failed so
                     // the master's launch_studio stream gets a meaningful Error.
@@ -838,6 +838,11 @@ async fn handle_master_msg(
                         if status.as_deref() == Some("error") {
                             exit_instance.cleanup();
                             return;
+                        }
+                        // A Studio that dies on its own says why only on stderr.
+                        let report_instance = exit_instance.clone();
+                        if let Ok(Some(report)) = tokio::task::spawn_blocking(move || report_instance.unexpected_exit(exit_status)).await {
+                            warn!(session_guid = %session_guid, "{report}");
                         }
                         let was_launching = matches!(status.as_deref(), Some("launching" | "pending"));
                         let reason = if was_launching {

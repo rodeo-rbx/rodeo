@@ -238,6 +238,7 @@ impl Studio {
     }
     pub fn warm_save_menu_once(&self) -> bool { self.inner.warm_save_menu_once() }
     pub fn kill(&self) { self.inner.kill() }
+    pub fn unexpected_exit(&self, status: std::process::ExitStatus) -> Option<String> { self.inner.unexpected_exit(status) }
 
     /// Full cleanup — delegates to inner (save + kill + fflag restore). The
     /// static plugin is a permanent install and is intentionally left in place.

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::fflags::{self, FflagConfig, FflagHandle, FflagTarget};
 use crate::studio::{layout, sign_in};
+use crate::studio::stderr::StderrTail;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,6 +101,10 @@ pub struct Studio {
     saved: AtomicBool,
     /// Cleaned-once flag — guarantees `cleanup()` runs its body only once.
     cleaned: AtomicBool,
+    /// Set by `kill()`: an exit after it is rodeo's doing, not Studio's.
+    killed: AtomicBool,
+    /// The last lines Studio wrote to stderr (empty for an adopted Studio).
+    stderr: StderrTail,
     detached: bool,
     /// Text unique to this launch's command line (its RunScript bootstrap,
     /// else its place file), used to find its log. `None` when neither.
@@ -202,7 +207,7 @@ impl Studio {
                 if let Some(ref script) = run_script_file {
                     cmd.args(["-runScriptFile", script]);
                 }
-                let handle = cmd
+                let mut handle = cmd
                     .args(&parent_args)
                     .background(opts.background)
                     .detached(opts.detached)
@@ -210,6 +215,7 @@ impl Studio {
                     .stderr(std::process::Stdio::piped())
                     .spawn()
                     .context("failed to launch Studio")?;
+                let stderr = watch_stderr(&mut handle);
 
                 let pid = handle.id();
                 Studio {
@@ -221,6 +227,8 @@ impl Studio {
                     layout_handle,
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
+                    killed: AtomicBool::new(false),
+                    stderr,
                     detached: opts.detached,
                     log_marker: run_script_file.clone(),
                     spawned_at,
@@ -261,7 +269,7 @@ impl Studio {
                     // not detached. (The first arg is the place file explorer opens.)
                     cmd.arg(&place_str).shell_open(true);
                 }
-                let handle = cmd
+                let mut handle = cmd
                     .args(&parent_args)
                     .background(opts.background)
                     .detached(opts.detached)
@@ -269,6 +277,7 @@ impl Studio {
                     .stderr(std::process::Stdio::piped())
                     .spawn()
                     .context("failed to launch Studio")?;
+                let stderr = watch_stderr(&mut handle);
 
                 let pid = handle.id();
                 Studio {
@@ -280,6 +289,8 @@ impl Studio {
                     layout_handle,
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
+                    killed: AtomicBool::new(false),
+                    stderr,
                     detached: opts.detached,
                     log_marker: run_script_file.clone().or(Some(place_str)),
                     spawned_at,
@@ -297,7 +308,7 @@ impl Studio {
                         cmd.args(["-runScriptFile", script]);
                     }
                 }
-                let handle = cmd
+                let mut handle = cmd
                     .args(&parent_args)
                     .background(opts.background)
                     .detached(opts.detached)
@@ -305,6 +316,7 @@ impl Studio {
                     .stderr(std::process::Stdio::piped())
                     .spawn()
                     .context("failed to launch Studio")?;
+                let stderr = watch_stderr(&mut handle);
 
                 let pid = handle.id();
                 Studio {
@@ -316,6 +328,8 @@ impl Studio {
                     layout_handle,
                     saved: AtomicBool::new(false),
                     cleaned: AtomicBool::new(false),
+                    killed: AtomicBool::new(false),
+                    stderr,
                     detached: opts.detached,
                     log_marker: run_script_file.clone(),
                     spawned_at,
@@ -352,6 +366,8 @@ impl Studio {
             layout_handle: None,
             saved: AtomicBool::new(false),
             cleaned: AtomicBool::new(false),
+            killed: AtomicBool::new(false),
+            stderr: StderrTail::default(),
             detached: true,
             log_marker,
             spawned_at,
@@ -373,6 +389,28 @@ impl Studio {
         if let Some(ref handle) = *self.handle.lock().unwrap() {
             handle.on_exit(callback);
         }
+    }
+
+    /// What to report when Studio exited with a failed status that rodeo
+    /// didn't cause, with the last lines it wrote to stderr. Only where the
+    /// status can be read: on macOS it can't (see [`crate::studio::stderr`]).
+    /// `None` for an exit `kill()` caused, a clean one, or a crash, which
+    /// [`StderrTail`] reports itself. Waits up to a second for those last
+    /// lines to be read.
+    pub fn unexpected_exit(&self, status: std::process::ExitStatus) -> Option<String> {
+        if status.success() || self.killed.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.stderr.wait_closed(Duration::from_secs(1));
+        if self.stderr.crashed() {
+            return None;
+        }
+        let lines = self.stderr.lines();
+        Some(if lines.is_empty() {
+            format!("Studio exited unexpectedly ({status})")
+        } else {
+            format!("Studio exited unexpectedly ({status}); the last lines it wrote to stderr:\n{}", lines.join("\n"))
+        })
     }
 
     /// Studio process PID.
@@ -597,6 +635,8 @@ impl Studio {
     /// [`Self::wait_for_sign_in_to_settle`]).
     /// Uses stored PID directly so it never blocks on the handle mutex.
     pub fn kill(&self) {
+        self.killed.store(true, Ordering::Relaxed);
+        self.stderr.report_crash(self.pid);
         if self.alive() {
             self.wait_for_sign_in_to_settle();
         }
@@ -808,6 +848,15 @@ pub fn create_minimal_place() -> WeakDom {
 
 /// `Enum.Technology.Voxel`.
 const TECHNOLOGY_VOXEL: u32 = 1;
+
+/// Read a launched Studio's stderr, which nothing else does (see
+/// [`crate::studio::stderr`]).
+fn watch_stderr(handle: &mut launch_control::Child) -> StderrTail {
+    match handle.stderr.take() {
+        Some(stderr) => StderrTail::watch(stderr, handle.id()),
+        None => StderrTail::default(),
+    }
+}
 
 /// Serialize a `WeakDom` to `.rbxl` binary format.
 pub fn serialize_place(dom: &WeakDom) -> Result<Vec<u8>> {
