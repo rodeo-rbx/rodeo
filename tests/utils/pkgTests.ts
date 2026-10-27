@@ -623,20 +623,23 @@ export function capture(run: RunFn): void {
     }
   });
 
-  it("capture: the simulator's maximum, 7680x4320, writes an image of exactly that size", async () => {
+  it("capture: a 7680-wide viewport writes an image of exactly its size", async () => {
     // The frame comes from the engine's capture file, so a 2x display's
-    // 15360x8640 frame is fine; the EditableImage route this replaced was
-    // capped at 8192 pixels a side and failed here.
-    const out = captureOut("8k");
+    // 15360-wide frame is fine; the EditableImage route this replaced was
+    // capped at 8192 pixels a side and failed here. Not the simulator's
+    // 7680x4320 maximum: on Studio 0.745 (macOS, 2x) a frame that large makes
+    // Studio allocate a Metal texture past the GPU's 32768 limit, and Metal
+    // aborts Studio. 7680x3600 (a 15360x7200 frame) still captures.
+    const out = captureOut("7680w");
     try {
       const result = await run({
         showReturn: true,
-        source: captureSource(out, "{ viewportSize = Vector2.new(7680, 4320), settle = 1 }"),
+        source: captureSource(out, "{ viewportSize = Vector2.new(7680, 3600), settle = 1 }"),
       });
       expect(result.ok).toBe(true);
       const r = result.return as { path: string; width: number; height: number };
-      expect(pngSize(r.path)).toEqual({ width: 7680, height: 4320 });
-      expect({ width: r.width, height: r.height }).toEqual({ width: 7680, height: 4320 });
+      expect(pngSize(r.path)).toEqual({ width: 7680, height: 3600 });
+      expect({ width: r.width, height: r.height }).toEqual({ width: 7680, height: 3600 });
     } finally {
       rmrf(out);
     }
