@@ -50,11 +50,11 @@ http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Roblox DOM (place creation, plugin) — using fork with serializer fix
-rbx_dom_weak = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
-rbx_binary = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
-rbx_xml = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
-rbx_reflection_database = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
+# Roblox DOM (plugin file). rbx-dom comes from the rodeo-rbx fork, whose
+# master mirrors upstream; rbx-control and rodeo-client pin the same rev, so
+# the build has one copy of each crate.
+rbx_dom_weak = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
+rbx_binary = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
 
 # HTTP client (run, ps, kill)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }

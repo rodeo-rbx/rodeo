@@ -40,9 +40,9 @@ roblox_install = "1"
 rbx_cookie = { version = "0.1", default-features = false }
 
 # Roblox DOM (minimal place generation for Studio launch)
-rbx_dom_weak = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
-rbx_binary = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
-rbx_xml = { git = "https://github.com/revvy02/rbx-dom.git", rev = "7f25359" }
+rbx_dom_weak = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
+rbx_binary = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
+rbx_xml = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
 
 # HTTP (place download)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json", "gzip"] }

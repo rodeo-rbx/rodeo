@@ -31,17 +31,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 roblox_install = "1"
 
-# rbx-dom: binary <-> XML model serialization. Used by roblox.export to emit
-# `.rbxmx` from the binary bytes SerializeInstancesAsync produces.
+# rbx-dom (the rodeo-rbx fork, at the same rev as rodeo-cli's): binary <-> XML
+# model serialization. Used by roblox.export to emit `.rbxmx` from the binary
+# bytes SerializeInstancesAsync produces.
 # rbx_binary must be >= 3.0: on 2026-06-30 Studio started storing the Tags
 # property in the SharedString index, which 2.x fails to decode
 # ("Type mismatch: Property Folder.Tags should be SharedString, but it was Tags").
-# 3.0.1 is the floor because it pulls rbx_reflection_database 3.0.1+roblox-741,
-# the first database that knows Decal/Texture's Emissive* properties (#36);
-# Cargo.lock isn't tracked, so a stale local lock would otherwise keep 728.
-rbx_binary = "3.0.1"
-rbx_dom_weak = "4.2"
-rbx_xml = "3.0.1"
+# The rev must be at or past 3.0.1, whose rbx_reflection_database
+# 3.0.1+roblox-741 is the first database that knows Decal/Texture's Emissive*
+# properties (#36).
+rbx_binary = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
+rbx_dom_weak = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
+rbx_xml = { git = "https://github.com/rodeo-rbx/rbx-dom", rev = "dbec31dbe6de9bc7d2b6dd78c35bb67b9236ebda" }
 
 # roblox.capture finalize: decode the engine's PNG, resample to the viewport
 # size, re-encode. `image` for the codec, fast_image_resize for a SIMD Lanczos
