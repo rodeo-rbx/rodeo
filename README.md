@@ -4,12 +4,21 @@
 
 # rodeo
 
-[![Latest release](https://img.shields.io/github/v/release/revvy02/rodeo?include_prereleases&label=latest)](https://github.com/revvy02/rodeo/releases)
-[![Latest stable](https://img.shields.io/github/v/release/revvy02/rodeo?label=stable)](https://github.com/revvy02/rodeo/releases)
+[![Latest release](https://img.shields.io/github/v/release/rodeo-rbx/rodeo?include_prereleases&label=latest)](https://github.com/rodeo-rbx/rodeo/releases)
+[![Latest stable](https://img.shields.io/github/v/release/rodeo-rbx/rodeo?label=stable)](https://github.com/rodeo-rbx/rodeo/releases)
 
-`rodeo` is an automation tool for Roblox Studio. It lets you execute code in any Studio environment and control Studio from your terminal, while providing the complete studio luau runtime.
+`rodeo` is a CLI for Roblox Studio, with access to the full Studio runtime plus a standard library for the host machine.
 
-> **Status:** macOS and Windows are fully supported. Linux currently is not. Breaking changes to API may happen.
+- Run code in any Studio mode (edit, run, play test, multiplayer test) at any identity: plugin, server, client, or the command bar
+- Read and write host files, spawn processes, and pipe stdin/stdout, like any other language runtime
+- Run Lune or Lute scripts with Roblox APIs via adapters
+- Inspect and change a running play test's live module state
+- Open a published place by ID or a local `.rbxl`, run a script in it, and save it back
+- Bake Studio-only data into your repo: values (CFrames, buffers, …) as `.luau` modules, instances as `.rbxm`, `EditableImage`s as PNG, `EditableMesh`es as glTF
+- Capture high-resolution viewport renders
+- Capture microprofiler dumps and override FFlags at launch
+
+> **Status:** macOS is fully supported, Windows works but may have some bugs, and Linux isn't supported yet. The API may still change in breaking ways.
 
 ## Examples
 
@@ -69,7 +78,7 @@ hello, frank
 | *(none)* | edit DOM, plugin identity (default) |
 | `--mode edit` | edit DOM, plugin identity, after ending a running run/test/play session |
 | `--context mcp` | edit DOM, StudioMCP identity (needs Studio's MCP server) |
-| `--context cmd` | edit DOM, command-bar identity (via the launch bootstrap; rodeo-launched Studios only, no StudioMCP) |
+| `--context cmd` | edit DOM, command-bar identity, for Studios launched with rodeo |
 | `--mode run --context server` | run mode, server DOM, server identity |
 | `--mode test --context server` | play test, server DOM, server identity |
 | `--mode test --context client` | play test, client DOM, client identity |
@@ -121,19 +130,28 @@ Model Map
 
 ### Bake data into your source tree
 
-`roblox.bake` writes a value to a `.luau` module. Roblox types round-trip through their constructors, so the file is valid Luau you can `require` from other code — this is how you precompute runtime-only data (animation lengths, generated lookup tables) and commit it.
+`roblox.bake` writes a value to a `.luau` module. Roblox types round-trip through their constructors and buffers through `buffer.fromstring`, so the file is valid Luau you can `require` from other code — this is how you precompute runtime-only data (animation lengths, generated lookup tables) and commit it.
 
 ```bash
 $ rodeo run --source '
 local roblox = require("@rodeo/roblox")
-roblox.bake("dump.luau", { coins = 120, spawn = workspace.Map.Spawn.Position })'
+local heights = buffer.create(6)
+buffer.writeu16(heights, 0, 1000)
+buffer.writeu16(heights, 2, 2000)
+buffer.writeu16(heights, 4, 1500)
+roblox.bake("dump.luau", {
+	coins = 120,
+	spawn = workspace.Map.Spawn.CFrame,
+	heights = heights,
+})'
 ```
 
 ```lua
 -- dump.luau
 return {
 	["coins"] = 120,
-	["spawn"] = vector.create(0, 5, 0),
+	["heights"] = buffer.fromstring("\xE8\x03\xD0\x07\xDC\x05"),
+	["spawn"] = CFrame.new(0, 5, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0),
 }
 ```
 
@@ -182,7 +200,7 @@ Every command resolves its port as `--port`, then `RODEO_PORT`, then 44872. Serv
 
 ## Companion tools
 
-- **[rbx-microprofiler](https://github.com/revvy02/rbx-microprofiler)** — view + diff Roblox microprofiler dumps captured via `rodeo run --profile`.
+- **[rbx-microprofiler](https://github.com/rodeo-rbx/rbx-microprofiler)** — view + diff Roblox microprofiler dumps captured via `rodeo run --profile`.
 
 ## Agentic workflows
 
