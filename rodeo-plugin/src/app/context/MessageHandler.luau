@@ -7,8 +7,7 @@
 
 local HttpService = game:GetService("HttpService")
 
-local runtime = require(script.Parent.Parent.Parent.library.runtime)
-local utils = require(script.Parent.Parent.Parent.library.utils)
+local runner = require(script.Parent.Parent.Parent.library.run)
 local constants = require(script.Parent.Parent.Parent.library.constants)
 local mode_driver = require(script.Parent.Parent.Parent.library.mode_driver)
 local server_version = require(script.Parent.Parent.Parent.library.server_version)
@@ -42,7 +41,7 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 	local getServerVersion = args.getServerVersion
 
 	-- Track active processes keyed by executionId
-	local activeProcesses: { [string]: { ctx: utils.ExecutionContext, kill: (() -> ())? } } = {}
+	local activeProcesses: { [string]: runner.Run } = {}
 
 	-- UI-facing process entries
 	local processEntries: { [string]: ProcessEntry } = {}
@@ -59,17 +58,9 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 		end
 	end
 
-	-- End a run that failed to start. Without an ExecutionDone the run client
-	-- waits forever (issue #32); the client prints its error.
-	local function failRun(executionId: string, err: any)
-		local done = rodeoProto.ExecutionDone.new({
-			executionId = executionId,
-			success = false,
-			error = `run failed to start: {err}`,
-		})
-		local msg = rodeoProto.PluginMessage.new({ msg = { type = "done", value = done } })
-		client:Send(HttpService:JSONEncode(msg:jsonEncode()))
-		updateExecuting()
+	-- A PluginMessage to the backend, as one WebSocket text frame.
+	local function send(message)
+		client:Send(HttpService:JSONEncode(message:jsonEncode()))
 	end
 
 	-- Why this plugin won't run the server's scripts, or nil if it will. The
@@ -121,131 +112,28 @@ local function createHandler(args: CreateHandlerArgs): () -> ()
 	end
 
 	-- Start a run whose full script is assembled. Everything after script
-	-- transport is unchanged from the pre-chunking single-message path.
+	-- transport is library/run's: the same code runs a run in ree.
 	local function executeRun(run)
 		setIsExecuting(true)
 
-		local context = run.context or "plugin"
-		local lf = run.logFilter
-		local logFilter = {
-			enableWarn = lf and lf.enableWarn,
-			enableError = lf and lf.enableError,
-			enableInfo = lf and lf.enableInfo,
-			enableOutput = lf and lf.enableOutput,
-			enableLogs = lf and lf.enableLogs,
-		}
-		local scriptArgs = run.scriptArgs or {}
 		local executionId = run.executionId
-
-		local created, ctx =
-			pcall(utils.createExecutionContext, run.script, context, executionId, run.instancePath, run.scriptPath)
-		if not created then
-			failRun(executionId, ctx)
-			return
-		end
-
-		local started, killFn = pcall(runtime.executeInContext, ctx, context, {
-			executionId = executionId,
-			logFilter = logFilter,
-			reloadRequires = run.reloadRequires,
-			verbose = run.verbose or verbose,
-			scriptArgs = scriptArgs,
-			returnFile = run.returnFile,
-			showReturn = run.showReturn,
-			outputFile = run.outputFile,
-			profile = run.profile,
-		}, {
-			onComplete = function(result)
-				local msg = rodeoProto.PluginMessage.new({
-					msg = { type = "done", value = rodeoProto.ExecutionDone.new({
-						executionId = executionId,
-						success = result and result.success or false,
-						error = result and result.error,
-						errorInOutput = result and result.errorInOutput or false,
-						returnValue = result and result.returnValue,
-					}) },
-				})
-				client:Send(HttpService:JSONEncode(msg:jsonEncode()))
-				-- Safety net: a capture that died mid-way leaves the simulator
-				-- applied; the shim restores on its own success/error paths.
-				pcall(simulator.restore, executionId)
+		local proc = runner.start(run, {
+			verbose = verbose,
+			send = send,
+			onComplete = function()
 				activeProcesses[executionId] = nil
 				processEntries[executionId] = nil
 				setActiveProcesses(table.clone(processEntries))
 				updateExecuting()
 			end,
-			onRpc = function(msg)
-				-- msg.callJson is canonical ClientRpcCall JSON minus executionId.
-				-- Stamp executionId, decode to typed, wrap, encode to wire.
-				--
-				-- This runs on the outgoing-event thread, NOT the thread blocked
-				-- in rpc.call's event:Wait(). If encoding/sending throws here
-				-- (e.g. JSONEncode rejects a string field carrying non-UTF-8
-				-- bytes — the wire is a UTF-8-locked WebSocket text frame), the
-				-- error would otherwise be swallowed and the caller would hang
-				-- forever. Catch it and deliver an error response for this id so
-				-- rpc.call's event:Wait() returns and errors at the call site.
-				msg.callJson.executionId = executionId
-				local id = msg.callJson.id
-				-- Responses are deferred: onRpc runs synchronously inside
-				-- rpc.call's send() (BindableEvent:Fire is synchronous), so a
-				-- direct Fire here would land before rpc.call reaches
-				-- event:Wait() and be missed, hanging the caller forever.
-				-- task.defer resumes after the caller is parked on Wait().
-				local function respond(res)
-					task.defer(function()
-						ctx.incomingEvent:Fire({ type = "rpc:response", id = id, res = res })
-					end)
-				end
-				local ok, err = pcall(function()
-					local typedCall = runtimeProto.ClientRpcCall.jsonDecode(msg.callJson)
-					local reqType = typedCall.req and typedCall.req.type
-					-- Plugin-handled RPCs: device-simulator sessions for
-					-- roblox.captureViewport. The service is PluginSecurity, so the
-					-- run (LocalScript identity in client context) can't drive
-					-- it; this handler runs at plugin identity in the same DOM.
-					if reqType == "robloxSimulatorApply" then
-						local req = typedCall.req.value
-						task.spawn(function()
-							local okApply, width, height = pcall(simulator.apply, executionId, req.device, req.width, req.height, req.scalingMode, req.pixelDensity, req.orientation, req.deviceForm)
-							if okApply then
-								respond({ type = "robloxSimulatorApply", value = { width = width, height = height } })
-							else
-								respond({ type = "error", value = tostring(width) })
-							end
-						end)
-						return
-					elseif reqType == "robloxSimulatorRestore" then
-						task.spawn(function()
-							local okRestore, restoreErr = pcall(simulator.restore, executionId)
-							if okRestore then
-								respond({ type = "robloxSimulatorRestore", value = {} })
-							else
-								respond({ type = "error", value = tostring(restoreErr) })
-							end
-						end)
-						return
-					end
-					local rpcMsg = rodeoProto.PluginMessage.new({
-						msg = { type = "rpc", value = typedCall },
-					})
-					client:Send(HttpService:JSONEncode(rpcMsg:jsonEncode()))
-				end)
-				if not ok then
-					-- e.g. JSONEncode rejecting a string field carrying non-UTF-8
-					-- bytes (the wire is a UTF-8-locked WebSocket text frame).
-					respond({ type = "error", value = tostring(err) })
-				end
-			end,
 		})
-		if not started then
-			-- An instance-path run renamed its original module; put it back.
-			pcall(ctx.cleanup)
-			failRun(executionId, killFn)
+		if not proc then
+			-- Failed to start; its ExecutionDone is already on the wire.
+			updateExecuting()
 			return
 		end
 
-		activeProcesses[executionId] = { ctx = ctx, kill = killFn }
+		activeProcesses[executionId] = proc
 		processEntries[executionId] = {
 			name = run.scriptPath or `inline-{executionId}`,
 			state = "running",
