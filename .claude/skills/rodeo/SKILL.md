@@ -91,6 +91,7 @@ Run a script in Studio.
 - `--context plugin|server|client|mcp|cmd` — the identity level to run at: plugin, server-runtime identity, client-runtime identity, StudioMCP's `execute_luau` identity (mcp; any DOM), or command bar via the launch bootstrap's bridge (cmd; edit DOM of a rodeo-launched Studio only). Not a script class
 - `--dom edit|server|client` — which DOM (usually inferred); `edit` targets the edit DOM even while a test/play session runs
 - `--studio-id <id>` — scope routing to one studio (id from `rodeo state`; unique prefix ok)
+- `--ree[="<options>"]` — run in ree, an emulated Roblox engine, instead of a Studio: no Studio, no serve, about a tenth of a second (see "Without Studio: `--ree`")
 - `--dom-id <id>` — pin the run to one DOM (id from `rodeo state`; unique prefix ok), including a server or client DOM of a running session. Only `--context` may accompany it, and it must fit the DOM: `server` needs a server DOM, `client` a client DOM, `cmd` the edit DOM; `plugin` (the default) and `mcp` fit any
 - `--show-return` — print return value to stdout (any size)
 - `--return <path>` — write return value to file: `.luau`/`.lua` emits Luau source, anything else JSON. Size-unbounded.
@@ -169,6 +170,8 @@ print(process.args)  --> { "--user", "frank" }
 ```
 
 Then run `rodeo run my-script.luau` with no flags. Everything after `--` becomes `process.args`.
+
+Quotes keep a word with spaces together (`--ree="--roots game/src"`, `-- "two words"`); the quotes are dropped.
 
 The directive is the base configuration. The CLI overrides it per layer. A flag on the CLI replaces the directive's copy of that flag, except repeatable flags like `--fflag.override`, which accumulate. A `--studio-id` or `--dom-id` on the CLI also replaces the directive's `--place` and its `--save` (run the script in an already-open Studio), and a `--place` on the CLI replaces the directive's `--studio-id`/`--dom-id`. A `--` tail on the CLI replaces the directive's script args entirely.
 
@@ -255,6 +258,46 @@ Two consequences decide which mode you need:
   reads as `Requested module experienced an error while loading` and names only
   the outermost require. Bisect it with `pcall(require, ...)` down the
   dependency chain, one level at a time, until you isolate the module.
+
+## Without Studio: `--ree`
+
+`rodeo run --ree` runs the script in [ree](https://github.com/rodeo-rbx/roblox-engine-emulator),
+an emulated Roblox engine, instead of a Studio. rodeo starts `ree` for that one
+run and answers the script's `@rodeo/*` calls itself, so there is no Studio, no
+serve and no plugin. A run takes about a tenth of a second.
+
+```bash
+rodeo run --ree --show-return --source "return workspace.Name"
+rodeo run --ree="--roots game/shared;game/src" --context server test.luau
+```
+
+- **ree's own options go after an `=`, as one string**: `--ree="--roots game/shared;game/src --offline"`.
+  They are split into words and handed to `ree run` as they are (`--roots`
+  mounts a Rojo project's roots; see ree's docs). Quotes keep a word with spaces
+  together: `--ree="--roots 'my game/src'"`. A bare `--ree` passes none.
+  `--ree "--roots x"` (a space, no `=`) is an error that says so.
+- **Kind**: an edit session by default. `--context server` or `--context client`
+  makes it a running server or client; no `--mode` is needed.
+- **What works**: output, return values and `--return`, exit codes and
+  `process.exit`, script arguments, file requires, `--reload-requires`,
+  `@rodeo/fs`, `io`, `stream` and `process`, `roblox.bake`, and `--adapter lune|lute`.
+- **What needs a Studio**: `roblox.captureViewport` and the device simulator,
+  `roblox.importInstances` / `exportInstances`, `--context mcp|cmd`, `--place`,
+  `--save`, `--profile`, `--studio-id` / `--dom-id` (refused with a message).
+- **Engine APIs work where ree emulates them.** A member it does not emulate
+  answers nil, and rodeo names it on stderr
+  (`ree: EncodingService.ComputeBufferHash is not emulated and answered nil`).
+  Treat a result that leaned on one as unverified, and check anything visual
+  or physics-sensitive in a Studio.
+- **Time is virtual.** `task.wait(600)` returns at once, and a wait on the host
+  (a file, stdin, a child process) takes none of the script's time. A run gets
+  3600 virtual seconds; `RODEO_REE_SECONDS` changes that, and a script still
+  running at the limit exits 2 with a message.
+- **Every run is a new engine.** Nothing carries over between runs, and there is
+  no `rodeo state` for them.
+- `ree` is found through `RODEO_REE`, else on PATH. It must have the host call
+  (rodeo-rbx/roblox-engine-emulator newer than 0.2.0-rodeo.1); an older one
+  fails the run with a message saying so.
 
 ## `@rodeo` API
 
