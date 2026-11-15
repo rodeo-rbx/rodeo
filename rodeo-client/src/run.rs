@@ -100,6 +100,54 @@ impl RunStream {
     }
 }
 
+/// A run's line to what executes it: the master's bidi stream, or an engine
+/// this client drives itself (ree.rs). The message loop below is the same for
+/// both — output, RPC dispatch against the local machine, exit codes.
+///
+/// `next` must be cancel-safe: the loop drops a pending `next` to send a reply.
+pub(crate) trait RunChannel: Send + 'static {
+    /// The next event; `Ok(None)` when the channel closed.
+    fn next(&mut self) -> impl std::future::Future<Output = Result<Option<proto::RunEvent>, String>> + Send;
+    fn send(&mut self, message: proto::RunClientMessage) -> impl std::future::Future<Output = ()> + Send;
+    /// What a channel that closed before the run completed means, for the
+    /// user: printed after `rodeo: `.
+    fn closed_reason(&self) -> &'static str;
+}
+
+type MasterStream = connectrpc::client::BidiStream<hyper::body::Incoming, proto::RunClientMessage, proto::RunEventView<'static>>;
+
+impl RunChannel for MasterStream {
+    async fn next(&mut self) -> Result<Option<proto::RunEvent>, String> {
+        match self.message().await {
+            Ok(Some(view)) => Ok(Some(view.to_owned_message())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn send(&mut self, message: proto::RunClientMessage) {
+        let _ = MasterStream::send(self, message).await;
+    }
+
+    fn closed_reason(&self) -> &'static str {
+        "run stream closed before the run completed (the server dropped the connection — an oversized submission exceeds the transport limit)"
+    }
+}
+
+/// Runs the message loop over `channel` and returns its event stream.
+pub(crate) fn run_on_channel<C: RunChannel>(
+    channel: C,
+    profile_dir: Option<std::path::PathBuf>,
+    print_errors: bool,
+) -> RunStream {
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<RunStreamEvent>();
+    let task = tokio::spawn(async move {
+        let mut channel = channel;
+        message_loop(&mut channel, profile_dir, print_errors, event_tx).await;
+    });
+    RunStream { rx: event_rx, _task: task }
+}
+
 /// Core runner — opens a bidi stream, loops, and feeds events into a channel.
 /// Returns the JoinHandle + the receiver for the channel. Used by both the
 /// buffered and streaming APIs.
@@ -208,14 +256,8 @@ async fn run_inner(
             .map_err(|e| anyhow!("failed to send script chunk: {e}"))?;
     }
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<RunStreamEvent>();
-    let profile_dir = opts.profile_dir.clone();
-
-    let task = tokio::spawn(async move {
-        message_loop(&mut bidi, profile_dir, print_errors, event_tx).await;
-    });
-
-    Ok((event_rx, task))
+    let stream = run_on_channel(bidi, opts.profile_dir.clone(), print_errors);
+    Ok((stream.rx, stream._task))
 }
 
 pub(crate) async fn run_stream(
@@ -289,8 +331,8 @@ pub(crate) async fn run_buffered(
 /// The bidi message loop — drains incoming events, forwards them as
 /// `RunStreamEvent`s, and handles client-side RPC dispatch against the local
 /// filesystem/stdio. Returns after `Done`, `Killed`, or `Disconnected`.
-async fn message_loop(
-    bidi: &mut connectrpc::client::BidiStream<hyper::body::Incoming, proto::RunClientMessage, proto::RunEventView<'static>>,
+async fn message_loop<C: RunChannel>(
+    bidi: &mut C,
     profile_dir: Option<std::path::PathBuf>,
     print_errors: bool,
     event_tx: mpsc::UnboundedSender<RunStreamEvent>,
@@ -332,10 +374,9 @@ async fn message_loop(
 
     loop {
         tokio::select! {
-            event = bidi.message() => {
+            event = bidi.next() => {
                 match event {
-                    Ok(Some(view)) => {
-                        let event: proto::RunEvent = view.to_owned_message();
+                    Ok(Some(event)) => {
                         if let Some(evt) = event.event {
                             match evt {
                                 proto::run_event::Event::Created(created) => {
@@ -539,7 +580,7 @@ async fn message_loop(
                     ended => {
                         let reason = match ended {
                             Err(e) => format!("rodeo: run stream failed: {e}\n"),
-                            _ => "rodeo: run stream closed before the run completed (the server dropped the connection — an oversized submission exceeds the transport limit)\n".to_string(),
+                            _ => format!("rodeo: {}\n", bidi.closed_reason()),
                         };
                         let error = reason.trim().trim_start_matches("rodeo: ").to_string();
                         let _ = event_tx.send(RunStreamEvent::Output {
@@ -564,7 +605,7 @@ async fn message_loop(
             }
             msg = response_rx.recv() => {
                 if let Some(m) = msg {
-                    let _ = bidi.send(m).await;
+                    bidi.send(m).await;
                 }
             }
             captured = capture_rx.recv() => {

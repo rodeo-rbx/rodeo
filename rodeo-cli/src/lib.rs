@@ -180,6 +180,44 @@ fn splice_directive(argv: &[String], directive_flags: &[String]) -> Vec<String> 
     spliced
 }
 
+/// clap's matches for `argv`, or its error and exit as `get_matches` gives
+/// them, except for one mistake clap's own message misleads on: ree's options
+/// given apart from their flag, `--ree "--roots game/src"`. `--ree` takes them
+/// after an `=` (cli.rs), so clap reads the string as an argument of rodeo's
+/// and suggests passing it after `--`: that would hand ree's options to the
+/// script and run it in a ree that never got them.
+fn matches_or_exit(mut command: clap::Command, argv: Vec<std::ffi::OsString>) -> clap::ArgMatches {
+    match command.try_get_matches_from_mut(&argv) {
+        Ok(matches) => matches,
+        Err(err) => {
+            if let Some(options) = ree_options_given_apart(&err, &argv) {
+                eprintln!("error: --ree takes ree's options after an '=', as one string: --ree=\"{options}\"");
+                std::process::exit(2);
+            }
+            err.exit()
+        }
+    }
+}
+
+/// The word after a bare `--ree` when it is what clap rejected and can only
+/// be a string of ree's options: it starts with a `-` and has a space in it,
+/// which no argument of rodeo's does. (A single word is left to clap: it may
+/// as well be a misspelled flag of rodeo's.)
+fn ree_options_given_apart(err: &clap::Error, argv: &[std::ffi::OsString]) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+
+    if err.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(rejected)) = err.get(ContextKind::InvalidArg) else { return None };
+    let words: Vec<_> = argv.iter().map(|word| word.to_string_lossy()).collect();
+    let flags = words.iter().position(|word| word == "--").unwrap_or(words.len());
+    words[..flags].windows(2).find_map(|pair| {
+        let next: &str = &pair[1];
+        (pair[0] == "--ree" && next == rejected && next.starts_with('-') && next.contains(char::is_whitespace)).then(|| next.to_string())
+    })
+}
+
 /// Library entry point: parses CLI, dispatches subcommands. main.rs is the
 /// thin binary wrapper that builds the tokio runtime and calls this.
 pub async fn run() {
@@ -194,9 +232,7 @@ pub async fn run() {
     }
 
     let banner = build_banner();
-    let matches = Cli::command()
-        .before_help(banner.clone())
-        .get_matches();
+    let matches = matches_or_exit(Cli::command().before_help(banner.clone()), std::env::args_os().collect());
     let cli = Cli::from_arg_matches(&matches)
         .unwrap_or_else(|e| e.exit());
 
@@ -221,9 +257,7 @@ pub async fn run() {
                 Some(tokens) if !tokens.flag_args.is_empty() || !tokens.script_args.is_empty() => {
                     let argv: Vec<String> = std::env::args().collect();
                     let spliced = splice_directive(&argv, &tokens.flag_args);
-                    let re_parsed = Cli::command()
-                        .before_help(banner)
-                        .get_matches_from(spliced);
+                    let re_parsed = matches_or_exit(Cli::command().before_help(banner), spliced.into_iter().map(Into::into).collect());
                     let cli = Cli::from_arg_matches(&re_parsed)
                         .unwrap_or_else(|e| e.exit());
                     (cli, tokens.script_args)
@@ -324,7 +358,7 @@ pub async fn run() {
             };
             commands::serve::main(port, mode).await
         }
-        Commands::Run { script, source, sourcemap, adapters, output, return_file, show_return, mode, dom_kind, context, studio_id, no_warn, no_error, no_info, no_print, no_output, reload_requires, cache_requires_removed, script_args, ppid, server, place, fflags } => {
+        Commands::Run { script, source, sourcemap, adapters, output, return_file, show_return, mode, dom_kind, context, ree, studio_id, no_warn, no_error, no_info, no_print, no_output, reload_requires, cache_requires_removed, script_args, ppid, server, place, fflags } => {
             if cache_requires_removed {
                 eprintln!(
                     "rodeo: --cache-requires was removed — caching instance requires is the default now.\n\
@@ -340,6 +374,7 @@ pub async fn run() {
                 mode: mode.map(|m| m.as_str().to_string()),
                 dom_kind: dom_kind.map(|d| d.as_str().to_string()),
                 context: context.map(|c| c.as_str().to_string()),
+                ree,
                 studio_id,
                 no_warn, no_error, no_info, no_print, no_output,
                 reload_requires, script_args,

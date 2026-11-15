@@ -224,6 +224,33 @@ impl RouteSpec {
         })
     }
 
+    /// The kind of DataModel a run in ree gets (`--ree`):
+    /// each run starts its own engine, made as an edit session, a server or
+    /// a client, so there is no Studio to transition and no mode to protect.
+    /// `--dom`, else `--context`, says which; `--mode run/test/play` alone
+    /// means the server, as [`RouteSpec::resolve`]'s defaults do, and nothing
+    /// at all means edit. The Studio identities (mcp, cmd) do not exist there.
+    pub fn ree_kind(&self) -> Result<DomKind> {
+        use DomKind as K;
+        use RunContext as C;
+        use StudioMode as M;
+
+        if let Some(context @ (C::Mcp | C::Cmd)) = self.context {
+            bail!(
+                "context {} is a Studio identity; --ree runs a script as ree's edit session, server or client (--context server|client)",
+                context.as_str()
+            );
+        }
+        Ok(self.dom_kind.unwrap_or(match self.context {
+            Some(C::Server) => K::Server,
+            Some(C::Client) => K::Client,
+            _ => match self.mode {
+                None | Some(M::Edit) => K::Edit,
+                Some(M::Run | M::Test | M::Play) => K::Server,
+            },
+        }))
+    }
+
     /// Validate a spec for a run pinned to one DOM (`--dom-id`,
     /// `Dom.runCode`). The DOM already fixes mode and dom kind, so only
     /// `context` may be given. `resolve()` is the wrong check here: it infers
@@ -392,6 +419,30 @@ mod tests {
     // Issue #14: a pin to a server or client DOM with its own context must
     // validate. resolve() rejects exactly these specs (no --mode → edit), so
     // pinned runs must not go through it.
+    #[test]
+    fn the_ree_engine_takes_its_kind_from_dom_then_context_then_mode() {
+        // Nothing asked: an edit session. A context or dom alone is enough —
+        // there is no Studio mode to transition, so none has to be named.
+        assert_eq!(spec(None, None, None).ree_kind().unwrap(), K::Edit);
+        assert_eq!(spec(None, None, Some(C::Plugin)).ree_kind().unwrap(), K::Edit);
+        assert_eq!(spec(None, None, Some(C::Server)).ree_kind().unwrap(), K::Server);
+        assert_eq!(spec(None, None, Some(C::Client)).ree_kind().unwrap(), K::Client);
+        assert_eq!(spec(None, Some(K::Client), None).ree_kind().unwrap(), K::Client);
+        // A running mode alone means the server, as resolve()'s defaults do.
+        assert_eq!(spec(Some(M::Edit), None, None).ree_kind().unwrap(), K::Edit);
+        for mode in [M::Run, M::Test, M::Play] {
+            assert_eq!(spec(Some(mode), None, None).ree_kind().unwrap(), K::Server);
+            assert_eq!(spec(Some(mode), None, Some(C::Client)).ree_kind().unwrap(), K::Client);
+        }
+        // --dom wins over --context.
+        assert_eq!(spec(Some(M::Test), Some(K::Edit), Some(C::Plugin)).ree_kind().unwrap(), K::Edit);
+        // The Studio identities are refused.
+        for context in [C::Mcp, C::Cmd] {
+            let error = spec(None, None, Some(context)).ree_kind().unwrap_err().to_string();
+            assert!(error.contains("is a Studio identity"), "{error}");
+        }
+    }
+
     #[test]
     fn pinned_specs_allow_any_context_but_no_mode_or_dom() {
         for context in [None, Some(C::Plugin), Some(C::Server), Some(C::Client), Some(C::Mcp), Some(C::Cmd)] {

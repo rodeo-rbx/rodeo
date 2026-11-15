@@ -77,6 +77,7 @@ Run a script in Studio
 
   Possible values: `plugin`, `server`, `client`, `mcp`, `cmd`
 
+* `--ree <OPTIONS>` — Run the script in ree, the emulated Roblox engine (roblox-engine-emulator), instead of a Studio: ree is started for this one run, with no Studio and no serve. The script and its @rodeo/* calls work as in Studio; what ree does not emulate reports itself. --context server|client makes it a server or a client (default: an edit session). ree's own options go after an `=`, as one string that is split into words (quotes keep a word with spaces together) and handed to `ree run` as they are: --ree="--roots game/shared;game/src"
 * `--studio-id <STUDIO_ID>` — Scope routing to one studio by id (from `rodeo state`; unique prefix ok)
 * `--no-warn` — Disable warning output
 * `--no-error` — Disable error output

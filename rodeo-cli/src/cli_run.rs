@@ -50,8 +50,31 @@ pub struct RunRequest {
 /// `output` field holds the merged captured text.
 pub async fn run_piped(host: &str, port: u16, mut request: RunRequest) -> Result<RunResult> {
     let client = RodeoClient::connect(host, port)?;
-    let mut on_created = request.on_created.take();
-    let opts = RunCodeOpts {
+    let on_created = request.on_created.take();
+    let dom_id = request.dom_id.take();
+    let opts = run_opts(request);
+
+    let stream = match dom_id.as_deref() {
+        Some(dom_id) if !dom_id.is_empty() => {
+            let dom = client.get_dom(dom_id).await?;
+            dom.run_code_stream(opts).await?
+        }
+        _ => client.submit_run_stream(opts).await?,
+    };
+    pipe(stream, on_created).await
+}
+
+/// Execute a run in ree (`--ree`): `engine` is started for
+/// this one run and answered by this process. Output and result as
+/// [`run_piped`]'s.
+pub async fn run_piped_ree(engine: rodeo_client::ree::ReeEngine, mut request: RunRequest) -> Result<RunResult> {
+    let on_created = request.on_created.take();
+    let stream = rodeo_client::ree::run_stream(engine, run_opts(request)).await?;
+    pipe(stream, on_created).await
+}
+
+fn run_opts(request: RunRequest) -> RunCodeOpts {
+    RunCodeOpts {
         source: request.script,
         mode: request.route.mode.map(|m| m.as_str().to_string()),
         dom_kind: request.route.dom_kind.map(|d| d.as_str().to_string()),
@@ -68,16 +91,15 @@ pub async fn run_piped(host: &str, port: u16, mut request: RunRequest) -> Result
         output_file: request.output_file,
         profile_dir: request.profile_dir,
         session: request.session,
-    };
+    }
+}
 
-    let mut stream = match request.dom_id.as_deref() {
-        Some(dom_id) if !dom_id.is_empty() => {
-            let dom = client.get_dom(dom_id).await?;
-            dom.run_code_stream(opts).await?
-        }
-        _ => client.submit_run_stream(opts).await?,
-    };
-
+/// Copies a run's output to this process's stdio as it arrives and returns
+/// its result.
+async fn pipe(
+    mut stream: rodeo_client::RunStream,
+    mut on_created: Option<tokio::sync::oneshot::Sender<String>>,
+) -> Result<RunResult> {
     let mut buffered_output = String::new();
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();
     let mut final_result: Option<RunResult> = None;

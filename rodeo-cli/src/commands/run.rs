@@ -17,6 +17,7 @@ pub struct RunArgs {
     pub mode: Option<String>,
     pub dom_kind: Option<String>,
     pub context: Option<String>,
+    pub ree: Option<String>,
     pub studio_id: Option<String>,
     pub no_warn: bool,
     pub no_error: bool,
@@ -65,6 +66,9 @@ struct RunConfig {
     studio_id: Option<String>,
     // Profiling
     profile: Option<std::path::PathBuf>,
+    // Set when ree runs the script in place of a Studio (--ree): ree's own
+    // options for the run, as words
+    ree: Option<Vec<String>>,
 }
 
 impl RunConfig {
@@ -97,14 +101,15 @@ fn args_route(args: &RunArgs) -> Result<crate::shared::target::RouteSpec> {
 pub async fn main(mut args: RunArgs) -> Result<()> {
     let has_script = args.script.is_some() || args.source.is_some();
     let has_place = args.place.to_target()?.is_some();
+    let on_ree = args.ree.is_some();
 
-    if has_place && !has_script {
+    if has_place && !has_script && !on_ree {
         return persistent_mode(args).await;
     }
 
     let cfg = resolve_script(&mut args)?;
     let cfg = prepare_execution(args, cfg)?;
-    let result = submit_and_run(cfg).await?;
+    let result = if cfg.ree.is_some() { run_on_ree(cfg).await? } else { submit_and_run(cfg).await? };
 
     if result.exit_code != 0 {
         std::process::exit(result.exit_code);
@@ -225,7 +230,28 @@ fn prepare_execution(args: RunArgs, resolved: ResolvedScript) -> Result<RunConfi
     // --context and reject it against the default edit mode, so no server or
     // client DOM could be pinned (issue #14). The master checks --context
     // against the pinned DOM's actual kind when it dispatches.
-    if args.place.dom_id.is_some() {
+    // ree's own options (--ree="…"), as the words `ree run` gets.
+    let ree = match &args.ree {
+        Some(options) => Some(crate::shared::words::split(options).map_err(|err| anyhow::anyhow!("--ree: {err} in its options ({options})"))?),
+        None => None,
+    };
+    if ree.is_some() {
+        // ree is started for this run alone: there is no Studio
+        // to launch, pin, save or profile, and its kind comes from the route
+        // without a Studio mode (RouteSpec::ree_kind).
+        route.ree_kind()?;
+        let studio_only: [(&str, bool); 6] = [
+            ("--place / --place-id", args.place.to_target()?.is_some()),
+            ("--dom-id", args.place.dom_id.is_some()),
+            ("--studio-id", args.studio_id.is_some()),
+            ("--save", args.place.save.is_some()),
+            ("--profile", args.place.profile.is_some()),
+            ("--detach", args.place.detached),
+        ];
+        if let Some((flag, _)) = studio_only.iter().find(|(_, given)| *given) {
+            bail!("{flag} is for a Studio; --ree starts ree for the run alone (give it a project with ree's own options, e.g. --ree=\"--roots game/shared;game/src\")");
+        }
+    } else if args.place.dom_id.is_some() {
         if route.mode.is_some() || route.dom_kind.is_some() {
             bail!("--dom-id pins the run to one DOM — mode/dom don't apply (only --context does)");
         }
@@ -297,7 +323,59 @@ fn prepare_execution(args: RunArgs, resolved: ResolvedScript) -> Result<RunConfi
         dom_id: args.place.dom_id,
         studio_id: args.studio_id,
         profile,
+        ree,
     })
+}
+
+/// Run the script in ree (`--ree`): start `ree` for this
+/// one run and answer its host calls from this process. No serve and no
+/// Studio are involved.
+async fn run_on_ree(cfg: RunConfig) -> Result<rodeo_client::RunResult> {
+    use crate::shared::target::DomKind;
+
+    // The engine's kind, ahead of the caller's own ree options so an
+    // explicit --mode / --run-context among them still has the last word.
+    let mut args: Vec<String> = match cfg.route.ree_kind()? {
+        DomKind::Edit => vec!["--mode".into(), "edit".into()],
+        DomKind::Server => vec!["--mode".into(), "play".into(), "--run-context".into(), "server".into()],
+        DomKind::Client => vec!["--mode".into(), "play".into(), "--run-context".into(), "client".into()],
+    };
+    args.extend(cfg.ree.unwrap_or_default());
+
+    let seconds = match std::env::var("RODEO_REE_SECONDS") {
+        Ok(text) => text
+            .parse::<f64>()
+            .ok()
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+            .with_context(|| format!("RODEO_REE_SECONDS={text:?} is not a number of seconds above 0"))?,
+        Err(_) => rodeo_client::ree::DEFAULT_SECONDS,
+    };
+
+    let engine = rodeo_client::ree::ReeEngine {
+        exe: rodeo_client::ree::locate()?,
+        plugin: crate::studio_backend::plugin_embed::embedded().to_vec(),
+        args,
+        seconds,
+    };
+    let request = RunRequest {
+        script: cfg.script_content,
+        route: cfg.route,
+        dom_id: None,
+        session: None,
+        log_filter: cfg.log_filter,
+        reload_requires: cfg.reload_requires,
+        script_args: cfg.script_args,
+        return_file: cfg.return_file,
+        show_return: cfg.show_return,
+        output_file: cfg.output_file,
+        verbose: cfg.verbose,
+        instance_path: cfg.instance_path,
+        script_path: cfg.script_path,
+        profile: false,
+        profile_dir: None,
+        on_created: None,
+    };
+    cli_run::run_piped_ree(engine, request).await
 }
 
 /// The serve on `cfg.port` to launch onto: the running one once it is known to

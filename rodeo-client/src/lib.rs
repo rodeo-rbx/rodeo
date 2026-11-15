@@ -8,6 +8,7 @@ pub mod client;
 pub mod studio;
 pub mod dom;
 pub mod run;
+pub mod ree;
 mod transport;
 pub mod runtime;
 

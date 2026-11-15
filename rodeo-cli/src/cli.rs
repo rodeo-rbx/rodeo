@@ -137,6 +137,18 @@ pub enum Commands {
         #[arg(long, value_enum, help_heading = "Targeting")]
         context: Option<ContextArg>,
 
+        /// Run the script in ree, the emulated Roblox engine
+        /// (roblox-engine-emulator), instead of a Studio: ree is started for
+        /// this one run, with no Studio and no serve. The script and its
+        /// @rodeo/* calls work as in Studio; what ree does not emulate
+        /// reports itself. --context server|client makes it a server or a
+        /// client (default: an edit session). ree's own options go after
+        /// an `=`, as one string that is split into words (quotes keep a
+        /// word with spaces together) and handed to `ree run` as they are:
+        /// --ree="--roots game/shared;game/src".
+        #[arg(long, value_name = "OPTIONS", num_args = 0..=1, default_missing_value = "", require_equals = true, allow_hyphen_values = true, help_heading = "Targeting")]
+        ree: Option<String>,
+
         /// Scope routing to one studio by id (from `rodeo state`; unique prefix ok).
         #[arg(long = "studio-id", help_heading = "Targeting", conflicts_with = "place")]
         studio_id: Option<String>,
@@ -488,5 +500,31 @@ mod fflag_override_tests {
             let err = parse(bad).expect_err(bad);
             assert!(err.contains("expected KEY=VALUE"), "{bad}: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod ree_flag_tests {
+    use super::*;
+
+    fn run(argv: &[&str]) -> (Option<String>, Option<String>, bool) {
+        match Cli::try_parse_from(argv).unwrap().command {
+            Commands::Run { ree, script, show_return, .. } => (ree, script, show_return),
+            _ => unreachable!(),
+        }
+    }
+
+    // ree's options start with `--` as rodeo's own do, so they are a value
+    // of --ree only after an `=`: what follows a bare --ree stays rodeo's.
+    #[test]
+    fn ree_takes_its_options_after_an_equals_and_nothing_else() {
+        assert_eq!(run(&["rodeo", "run", "x.luau"]), (None, Some("x.luau".into()), false));
+        assert_eq!(run(&["rodeo", "run", "--ree", "x.luau"]), (Some(String::new()), Some("x.luau".into()), false));
+        assert_eq!(run(&["rodeo", "run", "--ree", "--show-return", "x.luau"]), (Some(String::new()), Some("x.luau".into()), true));
+        assert_eq!(
+            run(&["rodeo", "run", "--ree=--roots game/shared;game/src", "--show-return", "x.luau"]),
+            (Some("--roots game/shared;game/src".into()), Some("x.luau".into()), true)
+        );
+        assert!(Cli::try_parse_from(["rodeo", "run", "--ree", "--roots game/src", "x.luau"]).is_err());
     }
 }

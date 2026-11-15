@@ -157,6 +157,26 @@ return {
 
 `--return dump.luau` does the same for a script's return value, once, when the run ends. A `--return` path that doesn't end in `.luau` is written as JSON.
 
+### Run without Studio, on ree
+
+`--ree` runs the script in [ree](https://github.com/rodeo-rbx/roblox-engine-emulator), an emulated Roblox engine, instead of a Studio. rodeo starts `ree` for that one run and answers the script's `@rodeo/*` calls itself: no serve, no Studio, no plugin install.
+
+```bash
+$ rodeo run --ree --show-return --source "print('hello') return workspace.Name"
+hello
+"Workspace"
+
+# a server, with the project's Rojo roots mounted
+$ rodeo run --ree="--roots game/shared;game/src" --context server test.luau
+```
+
+- ree is an edit session by default; `--context server` or `--context client` makes it a running server or client. Each run gets a new ree process, so nothing carries over between runs.
+- The run's code in ree is the plugin's own, so `@rodeo/fs`, `io`, `stream`, `process`, return values and the Lune and Lute adapters work as in Studio. What needs an engine service works where ree emulates it: a member it does not emulate answers nil, and rodeo names it on stderr.
+- Viewport captures, the device simulator, `roblox.importInstances` / `exportInstances`, `--context mcp|cmd`, `--place`, `--save` and `--profile` need a Studio.
+- A script's waits on its own clock (`task.wait`, a Heartbeat) take no real time, and its waits on the host (a file, stdin) take none of its own. A run gets 3600 virtual seconds; `RODEO_REE_SECONDS` sets that.
+- ree's own options go after an `=`, as one string: `--ree="--roots game/shared;game/src --offline"`. It is split into words and handed to `ree run` as they are; quotes keep a word with spaces together (`--ree="--roots 'my game/src'"`), and a backslash is itself. A script's `@rodeo run` directive can carry the same.
+- `ree` is found through `RODEO_REE`, else on PATH, and must be newer than 0.2.0-rodeo.1.
+
 ## State
 
 `rodeo state` shows what's connected right now as tables joined by a short studio id: the studios split by origin, their DOMs, and the runs executing on them.

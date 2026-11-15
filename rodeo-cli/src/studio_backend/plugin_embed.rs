@@ -13,6 +13,12 @@ use rbx_dom_weak::ustr;
 /// Workspace attributes its RunScript bootstrap sets.
 const PLUGIN_BINARY: &[u8] = include_bytes!("../../../rodeo-plugin/build/plugin.rbxm");
 
+/// The embedded plugin as built, with nothing baked in: what a host that is
+/// not a Studio mounts (ree, under --ree, which runs the plugin's library).
+pub fn embedded() -> &'static [u8] {
+    PLUGIN_BINARY
+}
+
 /// Attribute names baked onto the plugin's root instance. The plugin reads
 /// them as `script.Parent:GetAttribute(...)` in `init.server.luau`.
 pub const BUILD_ATTR: &str = "rodeoBuild";
