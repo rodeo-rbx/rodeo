@@ -1,6 +1,6 @@
 ---
 name: luau-heap-profiling
-description: Profile Luau heap memory usage and debug memory leaks using HeapProfilerService. Use this skill when the user wants to analyze memory allocations, take heap snapshots, compare memory usage over time, or find objects leaking memory in their Roblox experience.
+description: "Profile Luau heap memory and debug memory leaks in Roblox experiences. Use when the user reports high or growing memory usage, RAM spikes, out-of-memory crashes, or memory that isn't freed after an action, or when they explicitly want to take heap snapshots, compare memory over time, trace retention paths, find leaking objects/tables/instances, or verify that cleanup code actually frees memory. Covers Luau-allocated memory only (tables, closures, threads, strings, instances referenced by Luau) — not CPU/framerate profiling (MicroProfiler) or engine/C++/asset memory. Requires Studio Play mode and plugin/MCP-level access."
 ---
 
 # Luau Heap Profiling
@@ -37,18 +37,101 @@ local HeapProfilerService = game:GetService("HeapProfilerService")
 - Requests a heap snapshot from the server
 - Returns the heap snapshot data as a JSON string
 
-### Events
-
-**`HeapProfilerService.OnNewData(player: Player, jsonString: buffer, id: number, compressedLength: number, uncompressedLength: number)`**
-
-- Fires when heap profiling data becomes available
-- `player`: The player whose client provided the data (or nil for server)
-- `jsonString`: Compressed profiling data (buffer)
-- `id`: Data identifier for this snapshot
-- `compressedLength`: Size of the compressed data in bytes
-- `uncompressedLength`: Original uncompressed size in bytes
-
 ## Heap Snapshot Data
+
+The snapshot contained in the strings returned by `HeapProfilerService:ClientRequestDataAsync` and `HeapProfilerService:ServerRequestDataAsync` matches the following schema:
+
+```json
+{
+  "title": "HeapSnapshot",
+  "type": "object",
+  "properties": {
+    "Report": { "$ref": "#/definitions/HeapReport" },
+    "Refs": { "$ref": "#/definitions/UniqueRefReport" }
+  },
+  "required": ["Report", "Refs"],
+  "definitions": {
+    "UniqueRefEntryPath": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "UniqueRefEntry": {
+      "type": "object",
+      "properties": {
+        "Name": { "type": "string" },
+        "Count": { "type": "number" },
+        "Instances": { "type": "number" },
+        "Paths": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/UniqueRefEntryPath" }
+        }
+      },
+      "required": ["Name", "Count", "Instances", "Paths"]
+    },
+    "UniqueRefReport": {
+      "type": "object",
+      "properties": {
+        "Version": { "type": "number" },
+        "Roots": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/UniqueRefEntry" }
+        }
+      },
+      "required": ["Version", "Roots"]
+    },
+    "HeapReportStatsEntry": {
+      "type": "object",
+      "properties": {
+        "Name": { "type": "string" },
+        "Size": { "type": "number" },
+        "Count": { "type": "number" }
+      },
+      "required": ["Name", "Size", "Count"]
+    },
+    "HeapReportGraphEntry": {
+      "type": "object",
+      "properties": {
+        "Name": { "type": "string" },
+        "Source": { "type": "string" },
+        "Size": { "type": "number" },
+        "TotalSize": { "type": "number" },
+        "Children": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HeapReportGraphEntry" }
+        }
+      },
+      "required": ["Name", "Size", "TotalSize", "Children"]
+    },
+    "HeapReport": {
+      "type": "object",
+      "properties": {
+        "Version": { "type": "number" },
+        "TagBreakdown": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HeapReportStatsEntry" }
+        },
+        "MemcatBreakdown": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HeapReportStatsEntry" }
+        },
+        "UserdataBreakdown": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/HeapReportStatsEntry" }
+        },
+        "Graph": { "$ref": "#/definitions/HeapReportGraphEntry" },
+        "Refs": { "$ref": "#/definitions/UniqueRefReport" }
+      },
+      "required": [
+        "Version",
+        "TagBreakdown",
+        "MemcatBreakdown",
+        "UserdataBreakdown",
+        "Graph"
+      ]
+    }
+  }
+}
+```
 
 A heap snapshot represents all Luau-allocated memory at a point in time. It includes:
 
@@ -60,10 +143,9 @@ A heap snapshot represents all Luau-allocated memory at a point in time. It incl
 
 Each object in the snapshot has:
 
-- **Size** — Total memory including children (retained size)
-- **Self** — Direct memory allocated by this object alone (shallow size)
-- **Memory Category** — Engine-assigned label (customizable via `debug.setmemorycategory`)
-- **References** — What other objects point to this one (retention path)
+- **TotalSize** — Total memory including children (retained size)
+- **Size** — Direct memory allocated by this object alone (shallow size)
+- **Children** — Objects referenced by this one (follow these to trace retention paths)
 
 ## Workflow
 

@@ -1,6 +1,6 @@
 ---
 name: instrument-analytics
-description: Audit a Roblox experience for analytics-instrumentation opportunities and add Economy, Funnel, and Custom events via AnalyticsService. Runs in two modes: a read-only audit that proposes an event plan, and an instrument mode that creates a centralized analytics module and edits scripts to log events at the right places.
+description: Audit a Roblox experience for analytics-instrumentation opportunities and add Economy, Funnel, and Custom events via AnalyticsService. Supports a read-only audit that proposes an event plan and an instrument mode that creates a centralized analytics module and edits scripts to log events at the right places.
 ---
 
 # Instrument Analytics
