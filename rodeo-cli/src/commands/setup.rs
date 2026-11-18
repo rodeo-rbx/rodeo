@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::cli::StudioSkills;
+
+mod studio_skills;
+
 static TYPEDEF_INIT: &str = include_str!("../../../rodeo-pkg/rodeo/src/init.luau");
 static TYPEDEF_FS: &str = include_str!("../../../rodeo-pkg/rodeo/src/fs.luau");
 static TYPEDEF_IO: &str = include_str!("../../../rodeo-pkg/rodeo/src/io.luau");
@@ -24,10 +28,11 @@ static TYPEDEFS: [(&str, &str); 7] = [
 static SKILL: &str = include_str!("../../../.claude/skills/rodeo/SKILL.md");
 
 /// Where agents look for a project's skills. `setup` installs the rodeo skill
-/// into each of these the project already has, and creates none.
+/// into each of these the project already has, and the Studio skills when
+/// told to, and creates none.
 const SKILL_DIRS: [&str; 2] = [".claude/skills", ".agents/skills"];
 
-pub fn main() -> Result<()> {
+pub async fn main(studio_skills: StudioSkills) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     // dirs::home_dir() resolves %USERPROFILE% on Windows and $HOME on Unix —
     // `rodeo setup` was previously Unix-only because it read HOME directly.
@@ -93,7 +98,8 @@ pub fn main() -> Result<()> {
         install_skill(Path::new(dir), &version)?;
     }
 
-    Ok(())
+    // Last: it asks GitHub, and may ask the user.
+    studio_skills::run(studio_skills, &SKILL_DIRS).await
 }
 
 /// What `setup` does with a project's copy of the skill.

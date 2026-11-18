@@ -62,7 +62,12 @@ server-chosen subset under `rbx-` names (13 as of Studio 0.747; its entry in
    ```
    The paragraphs after the anchor go after the line of the raw `SKILL.md` that starts
    with that text. It has to match exactly one line.
-4. **Deploy** a curated skill where an agent will load it:
+4. **Deploy**: commit and push `curated/`. `rodeo setup` in a project compares the
+   project's `.claude/skills` and `.agents/skills` copies with `curated/` on this
+   repository's `main`, file by file, and installs the skills it lacks and replaces
+   the ones that differ (it asks first; `rodeo setup --studio-skills update` doesn't).
+   So a push is the release: there is no version to bump. To try a skill before
+   pushing, copy it by hand:
    ```bash
    cp -r curated/rbx-debug ../../../.claude/skills/rbx-debug   # e.g. the game repo
    ```

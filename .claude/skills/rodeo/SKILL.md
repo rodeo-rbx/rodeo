@@ -305,6 +305,14 @@ Run `rodeo setup` once per project to generate types and `.luaurc`. It also
 installs this skill into the project's `.claude/skills` and `.agents/skills`
 folders (those that exist), replacing a copy for an older rodeo.
 
+In the same folders it compares the Studio skills (the `rbx-*` folders:
+Roblox's Studio Assistant skills with notes for rodeo) with the latest on
+GitHub. In a terminal it asks before installing the missing ones and replacing
+the ones that differ; run by an agent or a script it only says what it found.
+`rodeo setup --studio-skills update` installs and replaces them without asking
+(a copy edited in the project is replaced too), and `--studio-skills skip`
+leaves them alone.
+
 ```lua
 local rodeo = require("@rodeo")         -- full API
 local fs = require("@rodeo/fs")         -- individual modules

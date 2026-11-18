@@ -16,7 +16,7 @@ Command-line interface for Roblox Studio
 * `state` — Show the canonical rodeo state: studios, their DOMs, and runs
 * `kill` — Kill a run or close a Studio by id
 * `save` — Save the Studio place
-* `setup` — Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo
+* `setup` — Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo. Also compares those folders' Studio skills with the latest on GitHub
 
 ###### **Options:**
 
@@ -168,9 +168,24 @@ Save the Studio place
 
 ## `rodeo setup`
 
-Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo
+Generate type definitions, configure .luaurc, and install the rodeo skill into the project's .claude/skills and .agents/skills folders (those that exist), replacing a copy for an older rodeo. Also compares those folders' Studio skills with the latest on GitHub
 
-**Usage:** `rodeo setup`
+**Usage:** `rodeo setup [OPTIONS]`
+
+###### **Options:**
+
+* `--studio-skills <WHAT>` — The Studio skills (the rbx-* folders: Roblox's Studio Assistant skills, adapted for use outside Studio) in the project's skill folders, compared with the latest in rodeo's repository on GitHub
+
+  Default value: `ask`
+
+  Possible values:
+  - `ask`:
+    Say which are missing or differ from the latest, and ask before installing and replacing them. Outside a terminal it only says
+  - `update`:
+    Install the missing ones and replace the ones that differ, without asking
+  - `skip`:
+    Leave them alone, and ask GitHub nothing
+
 
 
 

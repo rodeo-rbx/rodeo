@@ -1,14 +1,18 @@
 import { describe, it, expect } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runRodeo } from "../cli/helpers.js";
 
 // Port of tests/cli/setup.test.luau. Pure CLI tests — no background Studio.
 
+// `setup` without the Studio skills, which it would ask GitHub about: these
+// tests reach no network.
+const SETUP = ["setup", "--studio-skills", "skip"];
+
 describe("rodeo setup", () => {
   it("writes typedef files to ~/.rodeo/typedefs/{version}", () => {
-    const r = runRodeo(["setup"]);
+    const r = runRodeo(SETUP);
     expect(r.ok).toBe(true);
     expect(r.stderr).toContain("Wrote type definitions");
 
@@ -27,7 +31,7 @@ describe("rodeo setup", () => {
   it("creates .rodeo/.luaurc with rodeo alias", () => {
     if (existsSync(".rodeo/.luaurc")) unlinkSync(".rodeo/.luaurc");
 
-    const r = runRodeo(["setup"]);
+    const r = runRodeo(SETUP);
     expect(r.ok).toBe(true);
     expect(r.stderr).toContain(".rodeo/.luaurc");
 
@@ -45,7 +49,7 @@ describe("rodeo setup", () => {
       JSON.stringify({ aliases: { custom: "./some/path" } }, null, 2),
     );
 
-    const r = runRodeo(["setup"]);
+    const r = runRodeo(SETUP);
     expect(r.ok).toBe(true);
 
     const rc = JSON.parse(readFileSync(".rodeo/.luaurc", "utf8"));
@@ -56,7 +60,7 @@ describe("rodeo setup", () => {
   });
 
   it("can run script with require(@rodeo) after setup", () => {
-    runRodeo(["setup"]);
+    runRodeo(SETUP);
 
     // Bundle only works with file paths — write a temp script.
     const scriptPath = ".rodeo-test-require-rodeo.luau";
@@ -83,10 +87,10 @@ function skillFor(version: string): string {
 }
 
 // `rodeo setup` in a scratch project laid out by `prepare`.
-function setupIn(prepare: (dir: string) => void): { dir: string; stderr: string; exitCode: number | null } {
+function setupIn(prepare: (dir: string) => void, args: string[] = SETUP): { dir: string; stderr: string; exitCode: number | null } {
   const dir = mkdtempSync(join(tmpdir(), "rodeo-setup-skill-"));
   prepare(dir);
-  const proc = Bun.spawnSync(["rodeo", "setup"], { cwd: dir });
+  const proc = Bun.spawnSync(["rodeo", ...args], { cwd: dir });
   return { dir, stderr: proc.stderr.toString(), exitCode: proc.exitCode };
 }
 
@@ -133,6 +137,37 @@ describe("rodeo setup: the agent skill", () => {
       expect(r.exitCode, r.stderr).toBe(0);
       expect(readFileSync(join(r.dir, ".claude", "skills", "rodeo", "SKILL.md"), "utf8")).toBe(skillFor("99.0.0"));
       expect(r.stderr).toContain("it's for rodeo 99.0.0, newer than this one");
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// What asks GitHub (`ask`, the default, and `update`) is covered by the unit
+// tests of rodeo-cli/src/commands/setup/studio_skills.rs, against a source of
+// their own.
+describe("rodeo setup: the Studio skills", () => {
+  it("leaves them alone and says nothing of them with --studio-skills skip", () => {
+    const r = setupIn((dir) => {
+      mkdirSync(join(dir, ".claude", "skills", "rbx-debug"), { recursive: true });
+      writeFileSync(join(dir, ".claude", "skills", "rbx-debug", "SKILL.md"), "# an edited copy\n");
+    });
+    try {
+      expect(r.exitCode, r.stderr).toBe(0);
+      expect(r.stderr).not.toContain("Studio skill");
+      expect(readFileSync(join(r.dir, ".claude", "skills", "rbx-debug", "SKILL.md"), "utf8")).toBe("# an edited copy\n");
+      expect(readdirSync(join(r.dir, ".claude", "skills")).sort()).toEqual(["rbx-debug", "rodeo"]);
+    } finally {
+      rmSync(r.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a value that is not ask, update or skip", () => {
+    const r = setupIn(() => {}, ["setup", "--studio-skills", "maybe"]);
+    try {
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("possible values: ask, update, skip");
+      expect(existsSync(join(r.dir, ".rodeo"))).toBe(false);
     } finally {
       rmSync(r.dir, { recursive: true, force: true });
     }

@@ -16,6 +16,21 @@ pub enum DomKindArg { Edit, Server, Client }
 #[value(rename_all = "lowercase")]
 pub enum ContextArg { Plugin, Server, Client, Mcp, Cmd }
 
+/// What `rodeo setup` does about the Studio skills in the project's skill
+/// folders.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum StudioSkills {
+    /// Say which are missing or differ from the latest, and ask before
+    /// installing and replacing them. Outside a terminal it only says.
+    Ask,
+    /// Install the missing ones and replace the ones that differ, without
+    /// asking.
+    Update,
+    /// Leave them alone, and ask GitHub nothing.
+    Skip,
+}
+
 impl ModeArg {
     pub fn as_str(self) -> &'static str {
         match self { Self::Edit => "edit", Self::Run => "run", Self::Test => "test", Self::Play => "play" }
@@ -240,8 +255,15 @@ pub enum Commands {
 
     /// Generate type definitions, configure .luaurc, and install the rodeo
     /// skill into the project's .claude/skills and .agents/skills folders (those
-    /// that exist), replacing a copy for an older rodeo
-    Setup,
+    /// that exist), replacing a copy for an older rodeo. Also compares those
+    /// folders' Studio skills with the latest on GitHub
+    Setup {
+        /// The Studio skills (the rbx-* folders: Roblox's Studio Assistant
+        /// skills, adapted for use outside Studio) in the project's skill
+        /// folders, compared with the latest in rodeo's repository on GitHub
+        #[arg(long, value_enum, value_name = "WHAT", default_value = "ask")]
+        studio_skills: StudioSkills,
+    },
 
 
     /// Internal: master server process
